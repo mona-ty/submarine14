@@ -1,0 +1,6 @@
+User-agent: *
+Disallow: /
+
+# どうしてもGoogleには「noindex」を見せたい場合は下の2行に変更（推奨は上）
+# User-agent: *
+# Disallow:
