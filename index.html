@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>FF14 潜水艦：帰還時刻管理（ver.1.2.0）</title>
+<title>FF14 潜水艦：帰還時刻管理（ver.1.2.1）</title>
 <meta name="theme-color" content="#0f1220" />
 <!-- 検索避け（GitHub Pages でも有効） -->
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
@@ -32,7 +32,7 @@
 </head>
 <body>
 <header class="row">
-  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.2.0）</h1>
+  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.2.1）</h1>
 </header>
 
 <main>
@@ -128,7 +128,7 @@
 /* =========================
    バージョン
 ========================= */
-const APP_VERSION = '1.2.0';
+const APP_VERSION = '1.2.1';
 
 /* =========================
    ログ出力（通知ログ / 処理ログ）
@@ -136,14 +136,14 @@ const APP_VERSION = '1.2.0';
 function logArea(elId, msg){
   const el = document.getElementById(elId);
   if(!el) return;
-  el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}\n` + (el.textContent || '');
+  el.textContent = \`[\${new Date().toLocaleTimeString()}] \${msg}\n\` + (el.textContent || '');
 }
 function logNotify(msg){ logArea('notifyDiag', msg); }
 function think(msg){ logArea('thinkLog', msg); }
 
-/* 例外を画面下に出す */
-window.addEventListener('error', (e)=>{ logNotify(`JSエラー: ${e.message}`); });
-window.addEventListener('unhandledrejection', (e)=>{ logNotify(`Promise拒否: ${e.reason}`); });
+/* 例外を画面下に出す（パース後の例外） */
+window.addEventListener('error', (e)=>{ logNotify(\`JSエラー: \${e.message}\`); });
+window.addEventListener('unhandledrejection', (e)=>{ logNotify(\`Promise拒否: \${e.reason}\`); });
 
 /* =========================
    SW登録（通知を確実に）
@@ -165,25 +165,25 @@ const STORE = 'ff14-sub-eta-with-names-v2';
 const STORE_FIRED = 'ff14-sub-eta-with-names-v2-fired';
 
 const z = n => String(n).padStart(2,'0');
-function fmtLocal(d){ return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; }
+function fmtLocal(d){ return \`\${d.getFullYear()}-\${z(d.getMonth()+1)}-\${z(d.getDate())} \${z(d.getHours())}:\${z(d.getMinutes())}:\${z(d.getSeconds())}\`; }
 function humanLeft(ms){
   if(!isFinite(ms)) return '-';
   const neg=ms<0; ms=Math.abs(ms);
   const s=Math.floor(ms/1000);
   const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), ss=s%60;
-  return (neg?'-':'')+`${h}時間 ${m}分 ${z(ss)}秒`;
+  return (neg?'-':'')+\`\${h}時間 \${m}分 \${z(ss)}秒\`;
 }
 function normalizeJaSpaces(s){
   let t = s.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0))
-           .replace(/[：]/g,':').replace(/\u3000/g,' ')
-           .replace(/[ \t]+/g,' ').replace(/\s+\n/g,'\n').trim();
+           .replace(/[：]/g,':').replace(/\\u3000/g,' ')
+           .replace(/[ \\t]+/g,' ').replace(/\\s+\\n/g,'\\n').trim();
   // 日本語の間の空白を除去（OCR対策）
-  t = t.replace(/([\u3040-\u30FF\u3400-\u9FFF])\s+(?=[\u3040-\u30FF\u3400-\u9FFF])/g, '$1');
+  t = t.replace(/([\\u3040-\\u30FF\\u3400-\\u9FFF])\\s+(?=[\\u3040-\\u30FF\\u3400-\\u9FFF])/g, '$1');
   return t;
 }
 /** ffxiv_YYYYMMDD_HHMMSS_* → Date(ローカル) */
 function parseFileTimestamp(filename){
-  const m = filename.match(/ffxiv_(\d{8})_(\d{6})/i);
+  const m = filename.match(/ffxiv_(\\d{8})_(\\d{6})/i);
   if(!m) return null;
   const y=+m[1].slice(0,4), mo=+m[1].slice(4,6)-1, d=+m[1].slice(6,8);
   const hh=+m[2].slice(0,2), mm=+m[2].slice(2,4), ss=+m[2].slice(4,6);
@@ -193,31 +193,31 @@ function parseFileTimestamp(filename){
 /* =========================
    OCRパターン & 解析
 ========================= */
-const SUB_RE = /S\s*U\s*B\s*M\s*A\s*R\s*I\s*N\s*E/i;
-const SUB_NUM_RE = /S\s*U\s*B\s*M\s*A\s*R\s*I\s*N\s*E\s*[-‐-‒–—ー]?\s*([0-9]+)/i;
+const SUB_RE = /S\\s*U\\s*B\\s*M\\s*A\\s*R\\s*I\\s*N\\s*E/i;
+const SUB_NUM_RE = /S\\s*U\\s*B\\s*M\\s*A\\s*R\\s*I\\s*N\\s*E\\s*[-‐-‒–—ー]?\\s*([0-9]+)/i;
 
 function tokenToNumber(tok){
   if(!tok) return null;
   let t = tok;
   t = t.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0));
   t = t.replace(/[Oo〇]/g,'0').replace(/[Il|Ｉｌ｜]/g,'1').replace(/[Z乙二]/g,'2').replace(/[Ss]/g,'5');
-  t = t.replace(/\s+/g,'').replace(/[^\d]/g,'');
+  t = t.replace(/\\s+/g,'').replace(/[^\\d]/g,'');
   if(!t) return null;
   return parseInt(t,10);
 }
 /** 残り時間 … を含む厳密版 */
 function readHMStrict(s){
-  const m1 = s.match(/残り時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
+  const m1 = s.match(/残り時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*日\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*分/i);
   if(m1){ const d=tokenToNumber(m1[1]),h=tokenToNumber(m1[2]),mm=tokenToNumber(m1[3]); if(d!=null&&h!=null&&mm!=null) return {h:d*24+h,mm}; }
-  const m2 = s.match(/残り時間\s*([0-9０-９OIlZ乙二〇\s]{1,6})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
+  const m2 = s.match(/残り時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,6})\\s*時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*分/i);
   if(m2){ const h=tokenToNumber(m2[1]),mm=tokenToNumber(m2[2]); if(h!=null&&mm!=null) return {h,mm}; }
   return null;
 }
 /** 見出しに残り時間があり、行は「21時間22分」等だけのレイアウト用 */
 function readHMLoose(s){
-  const m3 = s.match(/([0-9０-９OIlZ乙二〇\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
+  const m3 = s.match(/([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*日\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*分/i);
   if(m3){ const d=tokenToNumber(m3[1]),h=tokenToNumber(m3[2]),mm=tokenToNumber(m3[3]); if(d!=null&&h!=null&&mm!=null) return {h:d*24+h,mm}; }
-  const m4 = s.match(/([0-9０-９OIlZ乙二〇\s]{1,6})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
+  const m4 = s.match(/([0-9０-９OIlZ乙二〇\\s]{1,6})\\s*時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*分/i);
   if(m4){ const h=tokenToNumber(m4[1]),mm=tokenToNumber(m4[2]); if(h!=null&&mm!=null) return {h,mm}; }
   return null;
 }
@@ -264,23 +264,28 @@ async function buildMinutesFromOCR(worker, data, imgEl){
     const text=L?.text??''; const s=normalizeJaSpaces(text);
     if(/探索完了/.test(s)){
       const bb=getBBox(L);
-      lineObjs.push({mins:0,isSub:SUB_RE.test(s),num:(s.match(SUB_NUM_RE)||[])[1]?+RegExp.$1:null,
+      const nm = s.match(SUB_NUM_RE);
+      lineObjs.push({mins:0,isSub:SUB_RE.test(s),num: nm ? +nm[1] : null,
         x0:bb?bb.x0:NaN,x1:bb?bb.x1:NaN,cy:bb?(bb.y0+bb.y1)/2:NaN,hgt:bb?(bb.y1-bb.y0):24});
       continue;
     }
     let hm=readHMStrict(s)||readHMLoose(s);
     if(!hm) continue;
     const bb=getBBox(L); const isSub=SUB_RE.test(s); const numM=s.match(SUB_NUM_RE);
-    lineObjs.push({mins:hm.h*60+hm.mm,isSub,num=numM?+numM[1]:null,
+    lineObjs.push({mins:hm.h*60+hm.mm,isSub,num: numM?+numM[1]:null,
       x0:bb?bb.x0:NaN,x1:bb?bb.x1:NaN,cy:bb?(bb.y0+bb.y1)/2:NaN,hgt:bb?(bb.y1-bb.y0):24});
   }
   if(lineObjs.length===0){
-    const raw=(data.text||'').split(/\n/).map(s=>normalizeJaSpaces(s));
+    const raw=(data.text||'').split(/\\n/).map(s=>normalizeJaSpaces(s));
     for(const s of raw){
-      if(/探索完了/.test(s)){ lineObjs.push({mins:0,isSub:SUB_RE.test(s),num:(s.match(SUB_NUM_RE)||[])[1]?+RegExp.$1:null,x0:NaN,x1:NaN,cy:NaN,hgt:24}); continue; }
+      if(/探索完了/.test(s)){
+        const nm = s.match(SUB_NUM_RE);
+        lineObjs.push({mins:0,isSub:SUB_RE.test(s),num: nm ? +nm[1] : null,x0:NaN,x1:NaN,cy:NaN,hgt:24});
+        continue;
+      }
       let hm=readHMStrict(s)||readHMLoose(s); if(!hm) continue;
       const numM=s.match(SUB_NUM_RE);
-      lineObjs.push({mins:hm.h*60+hm.mm,isSub:SUB_RE.test(s),num=numM?+numM[1]:null,x0:NaN,x1:NaN,cy:NaN,hgt:24});
+      lineObjs.push({mins:hm.h*60+hm.mm,isSub:SUB_RE.test(s),num: numM?+numM[1]:null,x0:NaN,x1:NaN,cy:NaN,hgt:24});
     }
   }
   if(lineObjs.length===0) return [];
@@ -320,17 +325,17 @@ const state = { rows: load(), fired: loadFired() };
 ========================= */
 const FIRE_TOLERANCE_MS = 15*60*1000;
 const alarmTimers = new Map();
-const ICON = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" viewBox=\"0 0 128 128\"><rect width=\"128\" height=\"128\" rx=\"24\" fill=\"#0f1220\"/><path d=\"M20 74h88v8H20z\" fill=\"#65d1ff\"/><path d=\"M24 70c8-16 32-22 44-22s36 6 44 22H24z\" fill=\"#a6e1ff\"/><circle cx=\"44\" cy=\"82\" r=\"6\" fill=\"#fff\"/><circle cx=\"84\" cy=\"82\" r=\"6\" fill=\"#fff\"/></svg>');
+const ICON = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="#0f1220"/><path d="M20 74h88v8H20z" fill="#65d1ff"/><path d="M24 70c8-16 32-22 44-22s36 6 44 22H24z" fill="#a6e1ff"/><circle cx="44" cy="82" r="6" fill="#fff"/><circle cx="84" cy="82" r="6" fill="#fff"/></svg>');
 const BADGE = ICON;
 
 function scheduleOne(etaISO, minsBefore){
   const eta = new Date(etaISO).getTime();
   const fireAt = eta - minsBefore*60000;
-  const key = `${etaISO}|m${minsBefore}`;
+  const key = \`\${etaISO}|m\${minsBefore}\`;
   if(state.fired.has(key)) return;
   const delay = fireAt - Date.now();
   if(delay <= 0 && delay >= -FIRE_TOLERANCE_MS){
-    notifyNow('帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+    notifyNow('帰還間近', \`\${minsBefore}分後に帰還（\${fmtLocal(new Date(eta))}）\`);
     state.fired.add(key); saveFired(state.fired); return;
   }
   if(delay < -FIRE_TOLERANCE_MS) return;
@@ -338,13 +343,13 @@ function scheduleOne(etaISO, minsBefore){
   const id = setTimeout(()=>{
     const now = Date.now();
     if(now >= fireAt - 2000 && now <= fireAt + FIRE_TOLERANCE_MS){
-      notifyNow('帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+      notifyNow('帰還間近', \`\${minsBefore}分後に帰還（\${fmtLocal(new Date(eta))}）\`);
       state.fired.add(key); saveFired(state.fired);
     }
     alarmTimers.delete(key);
   }, Math.max(0, delay));
   alarmTimers.set(key, id);
-  logNotify(`予約: ${new Date(fireAt).toLocaleString()} に ${minsBefore}分前通知（ETA ${fmtLocal(new Date(eta))}）`);
+  logNotify(\`予約: \${new Date(fireAt).toLocaleString()} に \${minsBefore}分前通知（ETA \${fmtLocal(new Date(eta))}）\`);
 }
 function rescheduleAll(){
   for(const id of alarmTimers.values()) clearTimeout(id);
@@ -365,15 +370,15 @@ async function beep(){
 async function notifyNow(title, body, { sticky = false } = {}){
   const appTitle = '【FF14 潜水艦タイマー】' + title;
   if(!('Notification' in window)){
-    alert(`${appTitle}\n${body}`); return;
+    alert(\`\${appTitle}\n\${body}\`); return;
   }
   if(Notification.permission!=='granted'){
     logNotify('通知: permission='+Notification.permission);
-    alert(`${appTitle}\n${body}`); return;
+    alert(\`\${appTitle}\n\${body}\`); return;
   }
   const options = {
     body,
-    tag: sticky ? `test-${Date.now()}` : 'ff14-submarine',
+    tag: sticky ? \`test-\${Date.now()}\` : 'ff14-submarine',
     renotify: !sticky,
     requireInteraction: sticky || document.hidden,
     silent: false,
@@ -424,7 +429,7 @@ document.addEventListener('input', (ev)=>{
     state.rows[i].name = val;
     save(state.rows);
     if(el.value.trim()==='') el.value = val;
-    think(`名前編集: row${i+1} -> "${val}"`);
+    think(\`名前編集: row\${i+1} -> "\${val}"\`);
   }
 });
 
@@ -441,10 +446,10 @@ function tick(){
     for(const r of state.rows){
       if(!r.eta) continue;
       const etaISO=r.eta, eta=new Date(etaISO).getTime();
-      const key=`${etaISO}|m${minsBefore}`;
+      const key=\`\${etaISO}|m\${minsBefore}\`;
       const fireAt = eta - minsBefore*60000;
       if(!state.fired.has(key) && Date.now() >= fireAt && Date.now() <= fireAt + FIRE_TOLERANCE_MS){
-        notifyNow('帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+        notifyNow('帰還間近', \`\${minsBefore}分後に帰還（\${fmtLocal(new Date(eta))}）\`);
         state.fired.add(key); saveFired(state.fired);
       }
     }
@@ -576,7 +581,7 @@ document.getElementById('alarmMinutes').addEventListener('change', ()=>{ resched
 
 function toICSUTC(dt){
   const t = new Date(dt.getTime()-dt.getTimezoneOffset()*60000).toISOString();
-  return t.replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z');
+  return t.replace(/[-:]/g,'').replace(/\\.\\d{3}Z/,'Z');
 }
 document.getElementById('btnExport').addEventListener('click', ()=>{
   const minsAlarm = +document.getElementById('alarmMinutes').value || 0;
@@ -593,7 +598,7 @@ document.getElementById('btnExport').addEventListener('click', ()=>{
   });
   lines.push('END:VCALENDAR');
 
-  const blob = new Blob([lines.join('\r\n')], {type:'text/calendar'});
+  const blob = new Blob([lines.join('\\r\\n')], {type:'text/calendar'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ff14_submarine_returns.ics'; a.click();
 });
 
@@ -633,8 +638,8 @@ function test(name, fn){
 function assert(c,m){ if(!c) throw new Error(m||'assert'); }
 
 (function init(){
-  document.title = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
-  document.getElementById('appTitle').textContent = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
+  document.title = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION})`;
+  document.getElementById('appTitle').textContent = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION})`;
 
   test('humanLeft 3661s → 1時間 1分 01秒', ()=>{ const s = humanLeft(3661*1000); assert(/1時間 1分 01秒/.test(s),'format'); });
   render();
