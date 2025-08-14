@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>FF14 潜水艦：帰還時刻管理（ver.1.2.2）</title>
+<title>FF14 潜水艦：帰還時刻管理（ver.1.2.4）</title>
 <meta name="theme-color" content="#0f1220" />
 <!-- 検索避け（GitHub Pages でも有効） -->
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
@@ -32,7 +32,7 @@
 </head>
 <body>
 <header class="row">
-  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.2.2）</h1>
+  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.2.4）</h1>
 </header>
 
 <main>
@@ -100,7 +100,7 @@
   <section class="card">
     <details open>
       <summary>処理ログ / Thinking（実行手順ログ）</summary>
-      <div id="thinkLog" class="small" style="white-space:pre-wrap"></div>
+    <div id="thinkLog" class="small" style="white-space:pre-wrap"></div>
     </details>
   </section>
 
@@ -122,13 +122,13 @@
   </section>
 </main>
 
-<!-- Tesseract 本体（CORS 安定のため crossorigin を指定） -->
+<!-- Tesseract 本体 -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" crossorigin="anonymous"></script>
 <script>
 /* =========================
    バージョン
 ========================= */
-const APP_VERSION = '1.2.2';
+const APP_VERSION = '1.2.4';
 
 /* =========================
    ログ出力（通知ログ / 処理ログ）
@@ -141,7 +141,7 @@ function logArea(elId, msg){
 function logNotify(msg){ logArea('notifyDiag', msg); }
 function think(msg){ logArea('thinkLog', msg); }
 
-/* 例外を画面下に出す（パース後の例外） */
+/* 例外を画面下に出す */
 window.addEventListener('error', (e)=>{ logNotify(`JSエラー: ${e.message}`); });
 window.addEventListener('unhandledrejection', (e)=>{ logNotify(`Promise拒否: ${e.reason}`); });
 
@@ -410,10 +410,10 @@ function render(){
     const eta = r.eta ? new Date(r.eta) : null;
     const left = eta ? (eta.getTime() - Date.now()) : NaN;
     const tr = document.createElement('tr');
-    tr.innerHTML = `
-      <td><input class="name" data-i="${i}" value="${r.name}" /></td>
-      <td>${eta ? `<span class="pill" data-eta="${eta.toISOString()}">${fmtLocal(eta)}</span>` : '-'}</td>
-      <td class="left" data-left="${r.eta||''}">${eta?humanLeft(left):'-'}</td>`;
+    tr.innerHTML =
+      '<td><input class="name" data-i="'+i+'" value="'+r.name.replace(/"/g,'&quot;')+'" /></td>' +
+      '<td>' + (eta ? ('<span class="pill" data-eta="'+eta.toISOString()+'">'+fmtLocal(eta)+'</span>') : '-') + '</td>' +
+      '<td class="left" data-left="'+(r.eta||'')+'">' + (eta?humanLeft(left):'-') + '</td>';
     tbody.appendChild(tr);
   });
   rescheduleAll();
@@ -477,44 +477,56 @@ function clearAll(){
 document.getElementById('btnClear').addEventListener('click', clearAll);
 
 /* =========================
-   OCR 実行（フォールバック付き）
+   OCR 実行（フォールバック + タイムアウト付）
 ========================= */
 function ensureTesseract(){
   if(window.Tesseract && typeof window.Tesseract.createWorker === 'function') return true;
   logNotify('Tesseract が読み込めていません。ネットワーク/拡張機能/CSP を確認してください。');
   return false;
 }
+function withTimeout(promise, ms, label){
+  let t;
+  const timeout = new Promise((_,rej)=> t=setTimeout(()=>rej(new Error(label+' timeout')), ms));
+  return Promise.race([promise.finally(()=>clearTimeout(t)), timeout]);
+}
 async function createTessWorkerWithFallback(){
-  const attempts = [
-    { workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-      corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
-      langPath:'https://tessdata.projectnaptha.com/5.0.0_fast',
-      label:'v5/fast' },
-    { workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-      corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
-      langPath:'https://tessdata.projectnaptha.com/5.0.0_best',
-      label:'v5/best' },
-    'default'
+  const langPaths = [
+    'https://tessdata.projectnaptha.com/5.0.0_fast',
+    'https://tessdata.projectnaptha.com/5.0.0/fast',
+    'https://tessdata.projectnaptha.com/5.0.0',
+    'https://tessdata.projectnaptha.com/4.0.0_fast',
+    'https://tessdata.projectnaptha.com/4.0.0/fast',
+    'https://tessdata.projectnaptha.com/4.0.0',
   ];
-  for(const a of attempts){
+  const langsList = ['jpn+eng','jpn','eng'];
+  for(const langPath of langPaths){
     try{
-      if(a==='default'){
-        think('OCR: default worker を試行');
-        const w = await Tesseract.createWorker({ logger:m=>{ if(m.progress!=null) think(`OCR: ${m.status} ${(m.progress*100).toFixed(1)}%`);} });
-        await w.loadLanguage('jpn+eng'); await w.initialize('jpn+eng');
-        return w;
-      }else{
-        think(`OCR: worker 構成を試行 (${a.label})`);
-        const w = await Tesseract.createWorker({ ...a, logger:m=>{ if(m.progress!=null) think(`OCR: ${m.status} ${(m.progress*100).toFixed(1)}%`);} });
-        await w.loadLanguage('jpn+eng'); await w.initialize('jpn+eng');
-        return w;
+      think(`OCR: worker 構成を試行 langPath=${langPath}`);
+      const w = await Tesseract.createWorker({
+        workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+        corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+        langPath,
+        logger:m=>{ if(m.progress!=null) think(`OCR: ${m.status} ${(m.progress*100).toFixed(1)}%`); }
+      });
+      for(const langs of langsList){
+        try{
+          think(`OCR: loadLanguage(${langs})`);
+          await withTimeout(w.loadLanguage(langs), 45000, `loadLanguage(${langs})`);
+          think(`OCR: initialize(${langs})`);
+          await withTimeout(w.initialize(langs), 15000, `initialize(${langs})`);
+          return { w, langs };
+        }catch(e){
+          logNotify(`OCR: ${langs} 初期化失敗: ${e.message}`);
+          try{ await w.reset(); }catch{}
+        }
       }
+      try{ await w.terminate(); }catch{}
     }catch(e){
-      logNotify(`OCR: ${a.label||'default'} 初期化失敗: ${e.message}`);
+      logNotify(`OCR: worker作成失敗 ${e.message}`);
       continue;
     }
   }
-  throw new Error('Tesseract worker の初期化に失敗しました');
+  throw new Error('Tesseract worker の初期化に失敗しました（全経路NG）');
 }
 
 document.getElementById('file').addEventListener('change', ev=>{
@@ -534,10 +546,11 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
   document.getElementById('ocrStatus').textContent = `OCR処理中…（基準時刻: ${fmtLocal(baseTime)}）`;
   const imgEl=document.getElementById('preview'); if(!imgEl.complete) await imgEl.decode();
   think('OCR開始: worker作成');
-  let worker = null;
+  let worker = null, langsUsed = 'jpn+eng';
   try{
-    worker = await createTessWorkerWithFallback();
-    think('OCR: 認識実行');
+    const { w, langs } = await createTessWorkerWithFallback();
+    worker = w; langsUsed = langs;
+    think(`OCR: 認識実行（langs=${langsUsed}）`);
     const { data } = await worker.recognize(f);
     const raw = data.text || '';
     document.getElementById('rawText').textContent = raw; document.getElementById('rawText').style.display='block';
@@ -638,10 +651,19 @@ function test(name, fn){
 function assert(c,m){ if(!c) throw new Error(m||'assert'); }
 
 (function init(){
-  document.title = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
-  document.getElementById('appTitle').textContent = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
+  document.title = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION})`;
+  document.getElementById('appTitle').textContent = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION})`;
 
   test('humanLeft 3661s → 1時間 1分 01秒', ()=>{ const s = humanLeft(3661*1000); assert(/1時間 1分 01秒/.test(s),'format'); });
+  test('parseFileTimestamp ffxiv_20250814_140414_430.png', ()=>{
+    const d = parseFileTimestamp('ffxiv_20250814_140414_430.png'); 
+    assert(d instanceof Date && !isNaN(+d) && d.getFullYear()===2025 && d.getMonth()===7 && d.getDate()===14 && d.getHours()===14 && d.getMinutes()===4 && d.getSeconds()===14, 'timestamp parse');
+  });
+  test('tokenToNumber OCR誤読補正', ()=>{
+    assert(tokenToNumber('O0〇')===0,'0'); 
+    assert(tokenToNumber('Il|')===111,'1s'); 
+  });
+
   render();
   setInterval(tick, 1000);
   think('初期化: レンダリング/カウントダウン開始');
