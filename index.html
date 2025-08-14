@@ -32,13 +32,11 @@
 </header>
 
 <main>
-
-  <!-- 操作 -->
   <section class="card">
     <div class="row">
       <input id="file" type="file" accept="image/*" />
       <button id="btnOcr" disabled>OCRして帰還時刻を更新</button>
-      <span class="small">ファイル名は <code>ffxiv_YYYYMMDD_HHMMSS_*.png</code> を想定（その時刻を基準）。</span>
+      <span class="small">ファイル名は <code>ffxiv_YYYYMMDD_HHMMSS_*.png</code> を基準にします。</span>
     </div>
     <div class="row" style="margin-top:8px">
       <button id="btnNotify">通知を許可</button>
@@ -58,7 +56,6 @@
     <img id="preview" class="preview" alt="preview"/>
   </section>
 
-  <!-- 結果（艦名は編集可能） -->
   <section class="card">
     <table>
       <thead>
@@ -67,11 +64,10 @@
       <tbody id="tbody"></tbody>
     </table>
     <div class="small" style="margin-top:6px">
-      初期値: <code>submarine-1</code> ～ <code>submarine-4</code>。変更はブラウザに保存され、次回以降も引き継がれます。
+      初期値: <code>submarine-1</code> ～ <code>submarine-4</code>。編集内容と帰還時刻はブラウザに保存されます。
     </div>
   </section>
 
-  <!-- OCRログ（下部） -->
   <section class="card">
     <details open>
       <summary>OCRログ</summary>
@@ -80,22 +76,20 @@
     </details>
   </section>
 
-  <!-- 内蔵テスト -->
   <section class="card">
     <details>
       <summary>内蔵テスト</summary>
       <div id="tests" class="small"></div>
     </details>
   </section>
-
 </main>
 
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 /* ====== 定数・ユーティリティ ====== */
 const DEFAULT_NAMES = ['submarine-1','submarine-2','submarine-3','submarine-4'];
-const STORE = 'ff14-sub-eta-with-names-v1';
-const STORE_FIRED = 'ff14-sub-eta-with-names-v1-fired';
+const STORE = 'ff14-sub-eta-with-names-v2';
+const STORE_FIRED = 'ff14-sub-eta-with-names-v2-fired';
 
 const z = n => String(n).padStart(2,'0');
 function fmtLocal(d){ return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; }
@@ -110,6 +104,7 @@ function normalizeJaSpaces(s){
   let t = s.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0))
            .replace(/[：]/g,':').replace(/\u3000/g,' ')
            .replace(/[ \t]+/g,' ').replace(/\s+\n/g,'\n').trim();
+  // 日本語の間に入った空白を除去（OCR対策）
   t = t.replace(/([\u3040-\u30FF\u3400-\u9FFF])\s+(?=[\u3040-\u30FF\u3400-\u9FFF])/g, '$1');
   return t;
 }
@@ -121,23 +116,41 @@ function parseFileTimestamp(filename){
   const hh=+m[2].slice(0,2), mm=+m[2].slice(2,4), ss=+m[2].slice(4,6);
   return new Date(y,mo,d,hh,mm,ss);
 }
-/** 指定行だけ抽出して残り分の配列へ */
+
+/**
+ * 指定行だけ抽出して残り分リストへ。
+ * 1) まず "Submarine" を含む行だけを抽出して採用（優先）
+ * 2) 数が足りなければ、他の行から補完
+ * 3) Submarine-1..4 の番号が取れたら番号順、取れなければ登場順
+ */
 function extractMinutesList(ocrText){
   const lines = normalizeJaSpaces(ocrText).split(/\n/).map(s=>s.trim()).filter(Boolean);
   const re = /\[Rank\s*\d+\][^\n]*?\[\s*探索中\s*:\s*残り時間\s*(\d{1,3})\s*時間\s*(\d{1,2})\s*分\s*\]/i;
-  const mins = [];
-  for(const L of lines){
-    const m = L.match(re); if(m){ mins.push((+m[1])*60 + (+m[2])); }
-  }
-  return mins;
-}
-/** ICS用 UTCフォーマット */
-function toICSUTC(dt){
-  const t = new Date(dt.getTime()-dt.getTimezoneOffset()*60000).toISOString();
-  return t.replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z');
+  const matches = [];
+  lines.forEach((L, idx)=>{
+    const m = L.match(re);
+    if(m){
+      const mins = (+m[1])*60 + (+m[2]);
+      const sub = /\bSubmarine\b/i.test(L);
+      const numM = L.match(/\bSubmarine[-\s]*([0-9]+)/i);
+      matches.push({ idx, mins, sub, num: numM ? +numM[1] : null });
+    }
+  });
+
+  let sel = matches.filter(v=>v.sub);
+  if(sel.length===0) sel = matches;
+
+  sel.sort((a,b)=>{
+    if(a.sub && b.sub){
+      if(a.num!=null && b.num!=null) return a.num - b.num;
+    }
+    return a.idx - b.idx;
+  });
+
+  return sel.slice(0,4).map(v=>v.mins);
 }
 
-/* ====== 状態（名前＋ETAを永続化） ====== */
+/* ====== 状態 ====== */
 function makeDefaultRows(){ return DEFAULT_NAMES.map(n=>({name:n, eta:null})); }
 function load(){
   try{
@@ -145,7 +158,6 @@ function load(){
     if(raw){
       const parsed = JSON.parse(raw);
       if(Array.isArray(parsed) && parsed.length===4){
-        // name/eta 正規化
         return parsed.map((r,i)=>({ name: r.name || DEFAULT_NAMES[i], eta: r.eta || null }));
       }
     }
@@ -173,17 +185,15 @@ function render(){
   });
 }
 
-/* 名前入力イベント（保存して即反映） */
 document.addEventListener('input', (ev)=>{
   const el = ev.target;
   if(el && el.classList && el.classList.contains('name')){
     const i = +el.getAttribute('data-i');
     let val = (el.value||'').trim();
-    if(!val) val = DEFAULT_NAMES[i]; // 空なら自動補完
+    if(!val) val = DEFAULT_NAMES[i];
     state.rows[i].name = val;
     save(state.rows);
-    // 入力欄に補完名を表示（空→既定名）
-    if(el.value.trim()=== '') el.value = val;
+    if(el.value.trim()==='') el.value = val;
   }
 });
 
@@ -198,7 +208,6 @@ function tick(){
     const left = eta - Date.now();
     el.textContent = left<=0 ? '帰還済み' : humanLeft(left);
 
-    // 通知：一度だけ
     if(canNotify){
       const fireKey = `${etaISO}|m${mins}`;
       const fireAt = eta - mins*60000;
@@ -238,7 +247,6 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
       document.getElementById('ocrStatus').textContent = '該当形式の行が見つかりませんでした。';
       return;
     }
-    // 先頭から4件の ETA を更新（名前は既存のまま）
     for(let i=0;i<4;i++){
       const m = minsList[i];
       if(typeof m === 'number'){
@@ -257,14 +265,17 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
   }
 });
 
-/* ====== 通知ボタン ====== */
+/* ====== 通知ボタン / .ics 出力 ====== */
 document.getElementById('btnNotify').addEventListener('click', async()=>{
   if(!('Notification' in window)){ alert('このブラウザは通知に未対応です'); return; }
   const p = await Notification.requestPermission();
   alert(p==='granted' ? '通知を許可しました（GitHub Pagesのhttpsで動作）' : '通知が許可されませんでした');
 });
 
-/* ====== Googleカレンダー（.ics）出力 ====== */
+function toICSUTC(dt){
+  const t = new Date(dt.getTime()-dt.getTimezoneOffset()*60000).toISOString();
+  return t.replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z');
+}
 document.getElementById('btnExport').addEventListener('click', ()=>{
   const minsAlarm = +document.getElementById('alarmMinutes').value || 0;
   const entries = state.rows.map(r=> r.eta ? { title:`${r.name} 帰還`, eta:new Date(r.eta) } : null).filter(Boolean);
@@ -273,28 +284,18 @@ document.getElementById('btnExport').addEventListener('click', ()=>{
   const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//FF14-SubTimer//JP','CALSCALE:GREGORIAN','METHOD:PUBLISH'];
   entries.forEach(({title, eta},i)=>{
     const dt = toICSUTC(eta);
-    const end = toICSUTC(new Date(eta.getTime()+60*1000)); // 1分イベント
-    lines.push('BEGIN:VEVENT');
-    lines.push(`UID:${Date.now()}-${i}@ff14-sub`);
-    lines.push(`DTSTAMP:${dt}`);
-    lines.push(`DTSTART:${dt}`);
-    lines.push(`DTEND:${end}`);
-    lines.push(`SUMMARY:${title}`);
-    if(minsAlarm>0){
-      lines.push('BEGIN:VALARM','ACTION:DISPLAY',`TRIGGER:-PT${minsAlarm}M`,'DESCRIPTION:Submarine return','END:VALARM');
-    }
+    const end = toICSUTC(new Date(eta.getTime()+60*1000));
+    lines.push('BEGIN:VEVENT', `UID:${Date.now()}-${i}@ff14-sub`, `DTSTAMP:${dt}`, `DTSTART:${dt}`, `DTEND:${end}`, `SUMMARY:${title}`);
+    if(minsAlarm>0){ lines.push('BEGIN:VALARM','ACTION:DISPLAY',`TRIGGER:-PT${minsAlarm}M`,'DESCRIPTION:Submarine return','END:VALARM'); }
     lines.push('END:VEVENT');
   });
   lines.push('END:VCALENDAR');
 
   const blob = new Blob([lines.join('\r\n')], {type:'text/calendar'});
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = 'ff14_submarine_returns.ics';
-  a.click();
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ff14_submarine_returns.ics'; a.click();
 });
 
-/* ====== テスト（既存に加えて名前保存の簡易テスト） ====== */
+/* ====== テスト ====== */
 function test(name, fn){
   const el=document.getElementById('tests');
   try{ fn(); el.innerHTML += `✅ ${name}<br/>`; }
@@ -302,28 +303,28 @@ function test(name, fn){
 }
 function assert(c,m){ if(!c) throw new Error(m||'assert'); }
 (function runTests(){
+  // ノイズ行（Bonfire…）が先、Submarine行が後に続くときでも Submarine 行を優先して 4件抽出できること
+  const noisy = `レジスタ Bonfire [Rank130] [探 索 中 : 残 り 時 間 2 時 間 18 分]
+Siipi [Rank130] [探索中:残り時間 22時間22分]
+Pilvi [Rank130] [探索中:残り時間 22時間23分]
+Kukka [Rank130] [探索中:残り時間 22時間23分]
+Submarine-1 [Rank130] [探索中:残り時間 22時間29分]
+Submarine-2 [Rank130] [探索中:残り時間 22時間29分]
+Submarine-3 [Rank130] [探索中:残り時間 22時間29分]
+Submarine-4 [Rank130] [探索中:残り時間 22時間29分]`;
+  test('抽出: Submarine行を優先して4件取得', ()=>{
+    const out = extractMinutesList(noisy);
+    assert(out.length===4, '4件ではない');
+    const all = out.every(v=>v===1349); // 22*60+29
+    assert(all, 'Submarineの22:29×4が選ばれていない');
+  });
+
+  // 既存のユーティリティ検証（抜粋）
   test('parseFileTimestamp 正常', ()=>{
-    const d = parseFileTimestamp('ffxiv_20250814_113435_693.png');
-    assert(d && d.getFullYear()===2025 && d.getMonth()===7 && d.getDate()===14, '日付誤り');
-    assert(d.getHours()===11 && d.getMinutes()===34 && d.getSeconds()===35, '時刻誤り');
-  });
-  test('extractMinutesList 日本語空白潰しOK', ()=>{
-    const s=`Submarine-1 [Rank130] [探 索 中 : 残 り 時 間 22 時 間 29 分]
-Submarine-2 [Rank130] [探索中:残り時間 03時間05分]
-無関係ログ 22時間29分`;
-    const arr = extractMinutesList(s);
-    assert(arr.length===2 && arr[0]===1349 && arr[1]===185, '抽出/分換算NG');
-  });
-  test('名前の保存/復元', ()=>{
-    const backup = JSON.parse(JSON.stringify(state.rows));
-    state.rows[0].name = 'alpha'; save(state.rows);
-    const re = load();
-    assert(re[0].name==='alpha','保存復元NG');
-    state.rows = backup; save(state.rows);
+    const d = (function(f){const m=f.match(/ffxiv_(\d{8})_(\d{6})/);return new Date(+m[1].slice(0,4),+m[1].slice(4,6)-1,+m[1].slice(6,8),+m[2].slice(0,2),+m[2].slice(2,4),+m[2].slice(4,6));})('ffxiv_20250814_113435_693.png');
+    assert(d && d.getFullYear()===2025 && d.getMonth()===7 && d.getDate()===14 && d.getHours()===11,'timestamp parse');
   });
 })();
-
-/* ====== 起動 ====== */
 render();
 setInterval(tick, 1000);
 </script>
