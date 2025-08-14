@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>FF14 潜水艦：帰還時刻管理（ver.1.1.2）</title>
+<title>FF14 潜水艦：帰還時刻管理（ver.1.1.3）</title>
 <meta name="theme-color" content="#0f1220" />
 <!-- 検索避け（GitHub Pages でも有効） -->
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
@@ -32,7 +32,7 @@
 </head>
 <body>
 <header class="row">
-  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.1.2）</h1>
+  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.1.3）</h1>
 </header>
 
 <main>
@@ -112,22 +112,39 @@
   </section>
 </main>
 
-<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js" crossorigin="anonymous"></script>
 <script>
+'use strict';
+
+/* =========================
+   先にログ関数（どこからでも使える）
+========================= */
+function logNotify(msg){
+  const el = document.getElementById('notifyDiag');
+  const t = new Date().toLocaleTimeString();
+  if(el){ el.textContent = `[${t}] ${msg}\n` + (el.textContent||''); }
+  else { console.log('[notify]', msg); }
+}
+
 /* =========================
    バージョン
 ========================= */
-const APP_VERSION = '1.1.2';
+const APP_VERSION = '1.1.3';
 
 /* =========================
    SW登録（通知を確実に）
 ========================= */
 let swReady = null;
 if ('serviceWorker' in navigator) {
-  // repo配下でも確実に参照できるよう相対パスを明示
-  navigator.serviceWorker.register('sw.js', { scope: './' })
-    .then(() => { swReady = navigator.serviceWorker.ready; logNotify('SW: 登録OK'); })
-    .catch(e => logNotify('SW: 登録失敗 ' + e.message));
+  try{
+    // プロジェクトページ/ユーザーページ両対応の相対URL
+    const swUrl = new URL('sw.js', location.href).toString();
+    navigator.serviceWorker.register(swUrl, { scope: './' })
+      .then(() => { swReady = navigator.serviceWorker.ready; logNotify('SW: 登録OK'); })
+      .catch(e => logNotify('SW: 登録失敗 ' + e.message));
+  }catch(e){
+    logNotify('SW: 初期化失敗 ' + e.message);
+  }
 }
 
 /* =========================
@@ -148,12 +165,10 @@ function humanLeft(ms){
 }
 function normalizeJaSpaces(s){
   let t = s.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0))
-           .replace(/[：]/g,':').replace(/　/g,' ')
-           .replace(/[ 	]+/g,' ').replace(/\s+
-/g,'
-').trim();
+           .replace(/[：]/g,':').replace(/\u3000/g,' ')
+           .replace(/[ \t]+/g,' ').replace(/\s+\n/g,'\n').trim();
   // 日本語の間の空白を除去（OCR対策）
-  t = t.replace(/([぀-ヿ㐀-鿿])\s+(?=[぀-ヿ㐀-鿿])/g, '$1');
+  t = t.replace(/([\u3040-\u30FF\u3400-\u9FFF])\s+(?=[\u3040-\u30FF\u3400-\u9FFF])/g, '$1');
   return t;
 }
 /** ffxiv_YYYYMMDD_HHMMSS_* → Date(ローカル) */
@@ -254,8 +269,7 @@ async function buildMinutesFromOCR(worker, data, imgEl){
 
   if(lineObjs.length===0){
     // bboxなしフォールバック
-    const raw=(data.text||'').split(/
-/).map(s=>normalizeJaSpaces(s));
+    const raw=(data.text||'').split(/\n/).map(s=>normalizeJaSpaces(s));
     for(const s of raw){
       if(/探索完了/.test(s)){ lineObjs.push({mins:0,isSub:SUB_RE.test(s),num:(s.match(SUB_NUM_RE)||[])[1]?+RegExp.$1:null,x0:NaN,x1:NaN,cy:NaN,hgt:24}); continue; }
       let hm=readHMStrict(s)||readHMLoose(s); if(!hm) continue;
@@ -304,11 +318,6 @@ const state = { rows: load(), fired: loadFired() };
 const FIRE_TOLERANCE_MS = 15*60*1000;
 const alarmTimers = new Map();
 
-function logNotify(msg){
-  const el=document.getElementById('notifyDiag'); if(!el) return;
-  const t=new Date().toLocaleTimeString(); el.textContent = `[${t}] ${msg}
-` + (el.textContent||'');
-}
 async function beep(){
   try{
     const ctx = new (window.AudioContext||window.webkitAudioContext)();
@@ -320,13 +329,11 @@ async function beep(){
 }
 async function notifyNow(title, body, { sticky = false } = {}){
   if(!('Notification' in window)){
-    alert(`${title}
-${body}`); return;
+    alert(`${title}\n${body}`); return;
   }
   if(Notification.permission!=='granted'){
     logNotify('通知: permission='+Notification.permission);
-    alert(`${title}
-${body}`); return;
+    alert(`${title}\n${body}`); return;
   }
   const options = {
     body,
@@ -510,14 +517,13 @@ document.getElementById('btnExport').addEventListener('click', ()=>{
   entries.forEach(({title, eta},i)=>{
     const dt = toICSUTC(eta);
     const end = toICSUTC(new Date(eta.getTime()+60*1000)); // 1分イベント
-    lines.push('BEGIN:VEVENT', `UID:${Date.now()}-${i}@ff14-sub`, `DTSTAMP:${dt}`, `DTSTART:${dt}`, `DTEND:${end}`, `SUMMARY:${title}`);
+    lines.push('BEGIN:VEVENT', `UID:${Date.now()}-${i}@FF14-SubTimer`, `DTSTAMP:${dt}`, `DTSTART:${dt}`, `DTEND:${end}`, `SUMMARY:${title}`);
     if(minsAlarm>0){ lines.push('BEGIN:VALARM','ACTION:DISPLAY',`TRIGGER:-PT${minsAlarm}M`,'DESCRIPTION:Submarine return','END:VALARM'); }
     lines.push('END:VEVENT');
   });
   lines.push('END:VCALENDAR');
 
-  const blob = new Blob([lines.join('
-')], {type:'text/calendar'});
+  const blob = new Blob([lines.join('\r\n')], {type:'text/calendar'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ff14_submarine_returns.ics'; a.click();
 });
 
@@ -537,22 +543,15 @@ document.getElementById('btnTest').addEventListener('click', ()=>{
 });
 
 /* =========================
-   内蔵テスト & 初期化
+   初期化
 ========================= */
-function test(name, fn){
-  const el=document.getElementById('tests');
-  try{ fn(); el.innerHTML += `✅ ${name}<br/>`; }
-  catch(e){ el.innerHTML += `❌ ${name} — ${e.message}<br/>`; console.error(name, e); }
-}
-function assert(c,m){ if(!c) throw new Error(m||'assert'); }
-
 (function init(){
   document.title = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
-  document.getElementById('appTitle').textContent = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
-
-  test('humanLeft 3661s → 1時間 1分 01秒', ()=>{ const s = humanLeft(3661*1000); assert(/1時間 1分 01秒/.test(s),'format'); });
+  const h1 = document.getElementById('appTitle'); if(h1) h1.textContent = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
   render();
   setInterval(tick, 1000);
+  // ページロード済みの合図
+  logNotify('初期化完了 ' + new Date().toLocaleString());
 })();
 </script>
 </body>
