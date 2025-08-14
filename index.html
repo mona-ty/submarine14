@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>FF14 潜水艦：帰還時刻（OCR/4隻固定/カウントダウン&通知）</title>
+<title>FF14 潜水艦：帰還時刻（OCR/名前編集/保存）</title>
 <meta name="theme-color" content="#0f1220" />
 <style>
   :root { --bg:#0f1220; --card:#171a2b; --border:#232946; --text:#e6ebff; --muted:#9aa3c7; }
@@ -15,6 +15,7 @@
   .card{background:#161a2b;border:1px solid var(--border);border-radius:12px;padding:12px}
   .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
   input,button,select{border-radius:10px;border:1px solid var(--border);background:#0c1020;color:var(--text);padding:8px 10px}
+  input.name{width:220px}
   button{cursor:pointer}
   table{width:100%;border-collapse:collapse}
   th,td{padding:8px;border-bottom:1px solid var(--border);text-align:left}
@@ -37,7 +38,7 @@
     <div class="row">
       <input id="file" type="file" accept="image/*" />
       <button id="btnOcr" disabled>OCRして帰還時刻を更新</button>
-      <span class="small">ファイル名は <code>ffxiv_YYYYMMDD_HHMMSS_*.png</code> を想定（その時刻を基準にします）。</span>
+      <span class="small">ファイル名は <code>ffxiv_YYYYMMDD_HHMMSS_*.png</code> を想定（その時刻を基準）。</span>
     </div>
     <div class="row" style="margin-top:8px">
       <button id="btnNotify">通知を許可</button>
@@ -51,20 +52,23 @@
           <option value="30">30分前</option>
         </select>
       </label>
-      <span class="small">※ 通知はページを開いている間に1回だけ</span>
+      <button id="btnExport">Googleカレンダー（.ics）出力</button>
+      <span class="small">※ .ics は VALARM を含みます</span>
     </div>
     <img id="preview" class="preview" alt="preview"/>
   </section>
 
-  <!-- 結果（名前/帰還/残り のみ） -->
+  <!-- 結果（艦名は編集可能） -->
   <section class="card">
     <table>
       <thead>
-        <tr><th>潜水艦名</th><th>帰還時間</th><th>残り</th></tr>
+        <tr><th>潜水艦名（編集可）</th><th>帰還時間</th><th>残り</th></tr>
       </thead>
       <tbody id="tbody"></tbody>
     </table>
-    <div id="note" class="small" style="margin-top:6px">上から順に <code>submarine-1</code> ～ <code>submarine-4</code> を割り当てます。</div>
+    <div class="small" style="margin-top:6px">
+      初期値: <code>submarine-1</code> ～ <code>submarine-4</code>。変更はブラウザに保存され、次回以降も引き継がれます。
+    </div>
   </section>
 
   <!-- OCRログ（下部） -->
@@ -86,13 +90,13 @@
 
 </main>
 
-<!-- Tesseract.js (OCR) -->
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 /* ====== 定数・ユーティリティ ====== */
-const NAMES = ['submarine-1','submarine-2','submarine-3','submarine-4'];
-const STORE = 'ff14-sub-eta-only-v2';
-const STORE_FIRED = 'ff14-sub-eta-only-v2-fired';
+const DEFAULT_NAMES = ['submarine-1','submarine-2','submarine-3','submarine-4'];
+const STORE = 'ff14-sub-eta-with-names-v1';
+const STORE_FIRED = 'ff14-sub-eta-with-names-v1-fired';
+
 const z = n => String(n).padStart(2,'0');
 function fmtLocal(d){ return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; }
 function humanLeft(ms){
@@ -127,16 +131,34 @@ function extractMinutesList(ocrText){
   }
   return mins;
 }
+/** ICS用 UTCフォーマット */
+function toICSUTC(dt){
+  const t = new Date(dt.getTime()-dt.getTimezoneOffset()*60000).toISOString();
+  return t.replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z');
+}
 
-/* ====== 状態 ====== */
-function load(){ try{ const raw=localStorage.getItem(STORE); if(raw) return JSON.parse(raw); }catch{} return NAMES.map(n=>({name:n, eta:null})); }
+/* ====== 状態（名前＋ETAを永続化） ====== */
+function makeDefaultRows(){ return DEFAULT_NAMES.map(n=>({name:n, eta:null})); }
+function load(){
+  try{
+    const raw = localStorage.getItem(STORE);
+    if(raw){
+      const parsed = JSON.parse(raw);
+      if(Array.isArray(parsed) && parsed.length===4){
+        // name/eta 正規化
+        return parsed.map((r,i)=>({ name: r.name || DEFAULT_NAMES[i], eta: r.eta || null }));
+      }
+    }
+  }catch{}
+  return makeDefaultRows();
+}
 function save(rows){ localStorage.setItem(STORE, JSON.stringify(rows)); }
 function loadFired(){ try{ return new Set(JSON.parse(localStorage.getItem(STORE_FIRED)||'[]')); }catch{ return new Set(); } }
 function saveFired(set){ try{ localStorage.setItem(STORE_FIRED, JSON.stringify([...set])); }catch{} }
 
 const state = { rows: load(), fired: loadFired() };
 
-/* ====== 描画（名前/帰還/残り） ====== */
+/* ====== 描画（名前は input で編集可能） ====== */
 function render(){
   const tbody = document.getElementById('tbody'); tbody.innerHTML='';
   state.rows.forEach((r,i)=>{
@@ -144,12 +166,26 @@ function render(){
     const left = eta ? (eta.getTime() - Date.now()) : NaN;
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${NAMES[i]}</td>
+      <td><input class="name" data-i="${i}" value="${r.name}" /></td>
       <td>${eta ? `<span class="pill" data-eta="${eta.toISOString()}">${fmtLocal(eta)}</span>` : '-'}</td>
       <td class="left" data-left="${r.eta||''}">${eta?humanLeft(left):'-'}</td>`;
     tbody.appendChild(tr);
   });
 }
+
+/* 名前入力イベント（保存して即反映） */
+document.addEventListener('input', (ev)=>{
+  const el = ev.target;
+  if(el && el.classList && el.classList.contains('name')){
+    const i = +el.getAttribute('data-i');
+    let val = (el.value||'').trim();
+    if(!val) val = DEFAULT_NAMES[i]; // 空なら自動補完
+    state.rows[i].name = val;
+    save(state.rows);
+    // 入力欄に補完名を表示（空→既定名）
+    if(el.value.trim()=== '') el.value = val;
+  }
+});
 
 /* ====== カウントダウン ＆ 通知 ====== */
 function tick(){
@@ -164,9 +200,9 @@ function tick(){
 
     // 通知：一度だけ
     if(canNotify){
-      const fireKey = `${etaISO}|m${mins}`;           // ETA + 分前 でユニーク化
+      const fireKey = `${etaISO}|m${mins}`;
       const fireAt = eta - mins*60000;
-      if(!state.fired.has(fireKey) && Date.now() >= fireAt && left > -60*1000){ // 1分の猶予で多重防止
+      if(!state.fired.has(fireKey) && Date.now() >= fireAt && left > -60*1000){
         new Notification('潜水艦 帰還間近', { body: `${mins}分後に帰還（${fmtLocal(new Date(eta))}）` });
         state.fired.add(fireKey); saveFired(state.fired);
       }
@@ -174,7 +210,7 @@ function tick(){
   });
 }
 
-/* ====== イベント ====== */
+/* ====== OCR連携（ETAのみ更新・名前は保持） ====== */
 document.getElementById('file').addEventListener('change', ev=>{
   const f = ev.target.files?.[0];
   document.getElementById('btnOcr').disabled = !f;
@@ -188,7 +224,7 @@ document.getElementById('file').addEventListener('change', ev=>{
 document.getElementById('btnOcr').addEventListener('click', async()=>{
   const f = document.getElementById('file').files?.[0]; if(!f) return;
 
-  const baseTime = parseFileTimestamp(f.name) || new Date(); // 形式外なら現在時刻
+  const baseTime = parseFileTimestamp(f.name) || new Date();
   document.getElementById('ocrStatus').textContent = `OCR処理中…（基準時刻: ${fmtLocal(baseTime)}）`;
 
   const worker = await Tesseract.createWorker('jpn+eng');
@@ -202,15 +238,14 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
       document.getElementById('ocrStatus').textContent = '該当形式の行が見つかりませんでした。';
       return;
     }
-    // 上から4件まで → 固定名に上書き
-    state.rows = NAMES.map((name, i)=> {
+    // 先頭から4件の ETA を更新（名前は既存のまま）
+    for(let i=0;i<4;i++){
       const m = minsList[i];
       if(typeof m === 'number'){
         const eta = new Date(baseTime.getTime() + m*60000);
-        return { name, eta: eta.toISOString() };
+        state.rows[i].eta = eta.toISOString();
       }
-      return { name, eta: null };
-    });
+    }
     save(state.rows);
     render();
     document.getElementById('ocrStatus').textContent = `検出 ${minsList.length} 件（反映 ${Math.min(4, minsList.length)} 件）。`;
@@ -222,13 +257,44 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
   }
 });
 
+/* ====== 通知ボタン ====== */
 document.getElementById('btnNotify').addEventListener('click', async()=>{
   if(!('Notification' in window)){ alert('このブラウザは通知に未対応です'); return; }
   const p = await Notification.requestPermission();
-  alert(p==='granted' ? '通知を許可しました（GitHub Pages上のhttpsで動作します）' : '通知が許可されませんでした');
+  alert(p==='granted' ? '通知を許可しました（GitHub Pagesのhttpsで動作）' : '通知が許可されませんでした');
 });
 
-/* ====== テスト ====== */
+/* ====== Googleカレンダー（.ics）出力 ====== */
+document.getElementById('btnExport').addEventListener('click', ()=>{
+  const minsAlarm = +document.getElementById('alarmMinutes').value || 0;
+  const entries = state.rows.map(r=> r.eta ? { title:`${r.name} 帰還`, eta:new Date(r.eta) } : null).filter(Boolean);
+  if(!entries.length){ alert('エクスポート対象の帰還時刻がありません'); return; }
+
+  const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//FF14-SubTimer//JP','CALSCALE:GREGORIAN','METHOD:PUBLISH'];
+  entries.forEach(({title, eta},i)=>{
+    const dt = toICSUTC(eta);
+    const end = toICSUTC(new Date(eta.getTime()+60*1000)); // 1分イベント
+    lines.push('BEGIN:VEVENT');
+    lines.push(`UID:${Date.now()}-${i}@ff14-sub`);
+    lines.push(`DTSTAMP:${dt}`);
+    lines.push(`DTSTART:${dt}`);
+    lines.push(`DTEND:${end}`);
+    lines.push(`SUMMARY:${title}`);
+    if(minsAlarm>0){
+      lines.push('BEGIN:VALARM','ACTION:DISPLAY',`TRIGGER:-PT${minsAlarm}M`,'DESCRIPTION:Submarine return','END:VALARM');
+    }
+    lines.push('END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+
+  const blob = new Blob([lines.join('\r\n')], {type:'text/calendar'});
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'ff14_submarine_returns.ics';
+  a.click();
+});
+
+/* ====== テスト（既存に加えて名前保存の簡易テスト） ====== */
 function test(name, fn){
   const el=document.getElementById('tests');
   try{ fn(); el.innerHTML += `✅ ${name}<br/>`; }
@@ -248,10 +314,12 @@ Submarine-2 [Rank130] [探索中:残り時間 03時間05分]
     const arr = extractMinutesList(s);
     assert(arr.length===2 && arr[0]===1349 && arr[1]===185, '抽出/分換算NG');
   });
-  test('ETA計算 22:29', ()=>{
-    const base = parseFileTimestamp('ffxiv_20250814_113435_000.png');
-    const eta = new Date(base.getTime() + (22*60+29)*60000);
-    assert(eta.getHours()===10 && eta.getMinutes()===3 && eta.getSeconds()===35, '10:03:35想定');
+  test('名前の保存/復元', ()=>{
+    const backup = JSON.parse(JSON.stringify(state.rows));
+    state.rows[0].name = 'alpha'; save(state.rows);
+    const re = load();
+    assert(re[0].name==='alpha','保存復元NG');
+    state.rows = backup; save(state.rows);
   });
 })();
 
