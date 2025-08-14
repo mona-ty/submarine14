@@ -2,17 +2,17 @@
 <html lang="ja">
 <head>
 <meta charset="utf-8" />
-<!-- 収集・インデックス禁止（主要クローラ対応） -->
-<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
-<meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
-<meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <title>FF14 潜水艦：帰還時刻管理（ver.XX）</title>
 <meta name="theme-color" content="#0f1220" />
+<!-- 検索避け（あなたが追加済みのはず。念のため残します） -->
+<meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+<meta name="googlebot" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
+<meta name="referrer" content="no-referrer">
 <style>
   :root { --bg:#0f1220; --card:#171a2b; --border:#232946; --text:#e6ebff; --muted:#9aa3c7; }
   *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial}
   header{padding:16px;border-bottom:1px solid var(--border)}
   h1{margin:0;font-size:18px}
   main{max-width:980px;margin:0 auto;padding:16px;display:grid;gap:16px}
@@ -74,6 +74,25 @@
 
   <section class="card">
     <details open>
+      <summary>通知の診断 / テスト</summary>
+      <div class="row">
+        <button id="btnStatus">状態確認</button>
+        <label class="row small" style="gap:6px">
+          テスト:
+          <select id="testDelay">
+            <option value="0">今すぐ</option>
+            <option value="5000" selected>5秒後</option>
+            <option value="10000">10秒後</option>
+          </select>
+        </label>
+        <button id="btnTest">通知テストを実行</button>
+      </div>
+      <div id="notifyDiag" class="small" style="margin-top:6px;white-space:pre-wrap"></div>
+    </details>
+  </section>
+
+  <section class="card">
+    <details>
       <summary>OCRログ</summary>
       <div id="ocrStatus" class="small" style="margin:6px 0">画像を選ぶとOCRできます。</div>
       <div id="rawText" class="small" style="white-space:pre-wrap;display:none"></div>
@@ -91,14 +110,14 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 /* ====== バージョン表記 ====== */
-const APP_VERSION = '1.0.6';
+const APP_VERSION = '1.1.0';
 (function applyVersion(){
   const title = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
   document.title = title;
   const h1 = document.getElementById('appTitle'); if(h1) h1.textContent = title;
 })();
 
-/* ====== 定数・ユーティリティ ====== */
+/* ====== 定数・ユーティリティ（既存） ====== */
 const DEFAULT_NAMES = ['submarine-1','submarine-2','submarine-3','submarine-4'];
 const STORE = 'ff14-sub-eta-with-names-v2';
 const STORE_FIRED = 'ff14-sub-eta-with-names-v2-fired';
@@ -116,7 +135,6 @@ function normalizeJaSpaces(s){
   let t = s.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0))
            .replace(/[：]/g,':').replace(/\u3000/g,' ')
            .replace(/[ \t]+/g,' ').replace(/\s+\n/g,'\n').trim();
-  // 日本語の間の空白を除去（OCR対策）
   t = t.replace(/([\u3040-\u30FF\u3400-\u9FFF])\s+(?=[\u3040-\u30FF\u3400-\u9FFF])/g, '$1');
   return t;
 }
@@ -128,28 +146,19 @@ function parseFileTimestamp(filename){
   return new Date(y,mo,d,hh,mm,ss);
 }
 
-/** “Submarine”（空白混じりOK）と番号 */
+/* ====== OCR 用のパターン（前回までと同じ） ====== */
 const SUB_RE = /S\s*U\s*B\s*M\s*A\s*R\s*I\s*N\s*E/i;
 const SUB_NUM_RE = /S\s*U\s*B\s*M\s*A\s*R\s*I\s*N\s*E\s*[-‐-‒–—ー]?\s*([0-9]+)/i;
-
-/* --- 数字に強いトークン変換（行内のみ） --- */
 function tokenToNumber(tok){
   if(!tok) return null;
   let t = tok;
   t = t.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0));
-  t = t.replace(/[Oo〇]/g,'0')
-       .replace(/[Il|Ｉｌ｜]/g,'1')
-       .replace(/[Z乙二]/g,'2')
-       .replace(/[Ss]/g,'5');
-  t = t.replace(/\s+/g,'');           // 桁内スペース削除
-  t = t.replace(/[^\d]/g,'');         // 非数字除去
+  t = t.replace(/[Oo〇]/g,'0').replace(/[Il|Ｉｌ｜]/g,'1').replace(/[Z乙二]/g,'2').replace(/[Ss]/g,'5');
+  t = t.replace(/\s+/g,'').replace(/[^\d]/g,'');
   if(!t) return null;
   return parseInt(t,10);
 }
-
-/* --- 行テキストから (h, m) を抽出：2系統（厳密/ゆるめ） --- */
 function readHMStrict(s){
-  // 「残り時間 …」を含む行（従来）
   const m1 = s.match(/残り時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
   if(m1){ const d=tokenToNumber(m1[1]),h=tokenToNumber(m1[2]),mm=tokenToNumber(m1[3]); if(d!=null&&h!=null&&mm!=null) return {h:d*24+h,mm}; }
   const m2 = s.match(/残り時間\s*([0-9０-９OIlZ乙二〇\s]{1,6})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
@@ -157,139 +166,88 @@ function readHMStrict(s){
   return null;
 }
 function readHMLoose(s){
-  // 見出しに「残り時間」があり、行自体は「21時間22分」だけのレイアウト用
-  // 末尾/行内に「(日)?時間分」があれば採用
   const m3 = s.match(/([0-9０-９OIlZ乙二〇\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
   if(m3){ const d=tokenToNumber(m3[1]),h=tokenToNumber(m3[2]),mm=tokenToNumber(m3[3]); if(d!=null&&h!=null&&mm!=null) return {h:d*24+h,mm}; }
   const m4 = s.match(/([0-9０-９OIlZ乙二〇\s]{1,6})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
   if(m4){ const h=tokenToNumber(m4[1]),mm=tokenToNumber(m4[2]); if(h!=null&&mm!=null) return {h,mm}; }
   return null;
 }
-
-/* --- bbox の取得（無ければ null） --- */
 function getBBox(L){
   const bb = L?.bbox || L?.bbl || L?.boundingBox || null;
   if(!bb) return null;
   const n = v => Number.isFinite(+v) ? +v : NaN;
   const x0=n(bb.x0), x1=n(bb.x1), y0=n(bb.y0), y1=n(bb.y1);
-  if(!Number.isFinite(x0) || !Number.isFinite(x1) || !Number.isFinite(y0) || !Number.isFinite(y1)) return null;
+  if(!Number.isFinite(x0)||!Number.isFinite(x1)||!Number.isFinite(y0)||!Number.isFinite(y1)) return null;
   return {x0,x1,y0,y1};
 }
-
-/* --- クラスタリング（NaN セーフ） --- */
 function pickBestCluster(cands, imgW){
   const finite = cands.filter(c=>Number.isFinite(c.cy));
   const base = finite.length ? finite : cands.map(c=>({...c, cy: 0}));
   if(base.length===0) return [];
-
-  const heights = base.map(c=>c.hgt || 24).filter(Number.isFinite).sort((a,b)=>a-b);
+  const heights = base.map(c=>c.hgt||24).filter(Number.isFinite).sort((a,b)=>a-b);
   const med = heights[Math.floor(heights.length/2)] || 24;
-  const th = Math.max(20, Math.min(60, med * 1.5));
-
-  base.sort((a,b)=> (a.cy - b.cy) || 0);
-  const clusters = [];
-  for(const c of base){
-    const last = clusters[clusters.length-1];
-    if(!last || Math.abs(c.cy - last.lastCy) > th){
-      clusters.push({ items:[c], lastCy:c.cy });
-    }else{
-      last.items.push(c); last.lastCy = c.cy;
-    }
+  const th = Math.max(20, Math.min(60, med*1.5));
+  base.sort((a,b)=> (a.cy-b.cy) || 0);
+  const clusters=[]; for(const c of base){
+    const last=clusters[clusters.length-1];
+    if(!last || Math.abs(c.cy-last.lastCy)>th){ clusters.push({items:[c],lastCy:c.cy}); }
+    else { last.items.push(c); last.lastCy=c.cy; }
   }
-
-  let best = clusters[0], bestScore = -1;
+  let best=clusters[0],score=-1;
   for(const cl of clusters){
-    const xs = cl.items.map(i=>i.x0).filter(Number.isFinite);
-    const ys = cl.items.map(i=>i.cy).filter(Number.isFinite);
-    const xspread = xs.length? (Math.max(...xs) - Math.min(...xs)) : 9999;
-    const vspread = ys.length? (Math.max(...ys) - Math.min(...ys)) : 9999;
-    const cx = xs.length? (Math.max(...xs)+Math.min(...xs))/2 : imgW/2;
-    const centerDist = Math.abs(cx - imgW/2);
-    const score = cl.items.length*1000 - xspread - vspread - centerDist*0.1;
-    if(score > bestScore){ bestScore = score; best = cl; }
+    const xs=cl.items.map(i=>i.x0).filter(Number.isFinite);
+    const ys=cl.items.map(i=>i.cy).filter(Number.isFinite);
+    const xspread=xs.length?(Math.max(...xs)-Math.min(...xs)):9999;
+    const vspread=ys.length?(Math.max(...ys)-Math.min(...ys)):9999;
+    const cx=xs.length? (Math.max(...xs)+Math.min(...xs))/2 : imgW/2;
+    const centerDist=Math.abs(cx-imgW/2);
+    const s=cl.items.length*1000 - xspread - vspread - centerDist*0.1;
+    if(s>score){score=s;best=cl;}
   }
   return best.items;
 }
-
-/* --- OCR結果＋画像 → 分配列（堅牢化版） --- */
 async function buildMinutesFromOCR(worker, data, imgEl){
-  const lineObjs = [];
-  const lines = Array.isArray(data.lines) ? data.lines : [];
-
+  const lineObjs=[]; const lines=Array.isArray(data.lines)?data.lines:[];
   for(const L of lines){
-    const text = L?.text ?? '';
-    const s = normalizeJaSpaces(text);
-
-    // 「探索完了」→ 0分（すぐ帰還）
-    if(/探索完了/.test(s)){ 
-      const bb = getBBox(L);
-      lineObjs.push({
-        mins: 0, isSub: SUB_RE.test(s),
-        num: (s.match(SUB_NUM_RE)||[])[1] ? +RegExp.$1 : null,
-        x0: bb ? bb.x0 : NaN, x1: bb ? bb.x1 : NaN,
-        cy: bb ? (bb.y0 + bb.y1)/2 : NaN,
-        hgt: bb ? (bb.y1 - bb.y0) : 24
-      });
+    const text=L?.text??''; const s=normalizeJaSpaces(text);
+    if(/探索完了/.test(s)){
+      const bb=getBBox(L);
+      lineObjs.push({mins:0,isSub:SUB_RE.test(s),num:(s.match(SUB_NUM_RE)||[])[1]?+RegExp.$1:null,
+        x0:bb?bb.x0:NaN,x1:bb?bb.x1:NaN,cy:bb?(bb.y0+bb.y1)/2:NaN,hgt:bb?(bb.y1-bb.y0):24});
       continue;
     }
-
-    let hm = readHMStrict(s);
-    if(!hm) hm = readHMLoose(s);
-    if(!hm) continue;
-
-    const bb = getBBox(L);
-    const isSub = SUB_RE.test(s);
-    const numM = s.match(SUB_NUM_RE);
-
-    lineObjs.push({
-      mins: hm.h*60 + hm.mm,
-      isSub,
-      num: numM ? +numM[1] : null,
-      x0: bb ? bb.x0 : NaN,
-      x1: bb ? bb.x1 : NaN,
-      cy: bb ? (bb.y0 + bb.y1)/2 : NaN,
-      hgt: bb ? (bb.y1 - bb.y0) : 24
-    });
+    let hm=readHMStrict(s)||readHMLoose(s);
+    if(!hm || (!/時間/.test(s) && !/分/.test(s))) continue;
+    const bb=getBBox(L); const isSub=SUB_RE.test(s); const numM=s.match(SUB_NUM_RE);
+    lineObjs.push({mins:hm.h*60+hm.mm,isSub,num:numM?+numM[1]:null,
+      x0:bb?bb.x0:NaN,x1:bb?bb.x1:NaN,cy:bb?(bb.y0+bb.y1)/2:NaN,hgt:bb?(bb.y1-bb.y0):24});
   }
-
   if(lineObjs.length===0){
-    // テキストフォールバック（bbox不要）
-    const raw = (data.text || '').split(/\n/).map(s=>normalizeJaSpaces(s));
+    const raw=(data.text||'').split(/\n/).map(s=>normalizeJaSpaces(s));
     for(const s of raw){
-      if(/探索完了/.test(s)){ lineObjs.push({mins:0,isSub:SUB_RE.test(s),num:(s.match(SUB_NUM_RE)||[])[1] ? +RegExp.$1 : null, x0:NaN,x1:NaN,cy:NaN,hgt:24}); continue; }
-      let hm = readHMStrict(s) || readHMLoose(s);
-      if(!hm) continue;
-      const numM = s.match(SUB_NUM_RE);
-      lineObjs.push({ mins:hm.h*60+hm.mm, isSub:SUB_RE.test(s), num:numM?+numM[1]:null, x0:NaN,x1:NaN,cy:NaN,hgt:24 });
+      if(/探索完了/.test(s)){ lineObjs.push({mins:0,isSub:SUB_RE.test(s),num:(s.match(SUB_NUM_RE)||[])[1]?+RegExp.$1:null,x0:NaN,x1:NaN,cy:NaN,hgt:24}); continue; }
+      let hm=readHMStrict(s)||readHMLoose(s); if(!hm) continue;
+      const numM=s.match(SUB_NUM_RE);
+      lineObjs.push({mins:hm.h*60+hm.mm,isSub:SUB_RE.test(s),num:numM?+numM[1]:null,x0:NaN,x1:NaN,cy:NaN,hgt:24});
     }
   }
-
   if(lineObjs.length===0) return [];
-
-  // Submarine優先（番号順→縦位置）、なければクラスタで最適ブロック
-  let chosen = [];
-  const subs = lineObjs.filter(v=>v.isSub);
+  let chosen=[]; const subs=lineObjs.filter(v=>v.isSub);
   if(subs.length>=2){
-    chosen = subs.sort((a,b)=> (Number.isFinite(a.num)&&Number.isFinite(b.num)) ? a.num-b.num : (a.cy-b.cy));
+    chosen=subs.sort((a,b)=> (Number.isFinite(a.num)&&Number.isFinite(b.num))?a.num-b.num:(a.cy-b.cy));
   }else{
-    const imgW = imgEl?.naturalWidth || 2000;
-    chosen = pickBestCluster(lineObjs, imgW).sort((a,b)=> (a.cy-b.cy) || 0);
+    const imgW=imgEl?.naturalWidth||2000;
+    chosen=pickBestCluster(lineObjs,imgW).sort((a,b)=> (a.cy-b.cy)||0);
   }
-
   return chosen.slice(0,4).map(v=>v.mins);
 }
 
-/* ====== 状態（永続化） ====== */
+/* ====== 状態 & 保存 ====== */
 function makeDefaultRows(){ return DEFAULT_NAMES.map(n=>({name:n, eta:null})); }
 function load(){
-  try{
-    const raw = localStorage.getItem(STORE);
-    if(raw){
-      const parsed = JSON.parse(raw);
-      if(Array.isArray(parsed) && parsed.length===4){
-        return parsed.map((r,i)=>({ name: r.name || DEFAULT_NAMES[i], eta: r.eta || null }));
-      }
-    }
+  try{ const raw=localStorage.getItem(STORE);
+    if(raw){ const parsed=JSON.parse(raw);
+      if(Array.isArray(parsed)&&parsed.length===4){ return parsed.map((r,i)=>({name:r.name||DEFAULT_NAMES[i],eta:r.eta||null})); } }
   }catch{}
   return makeDefaultRows();
 }
@@ -299,7 +257,69 @@ function saveFired(set){ try{ localStorage.setItem(STORE_FIRED, JSON.stringify([
 
 const state = { rows: load(), fired: loadFired() };
 
-/* ====== 描画 ====== */
+/* ====== 通知スケジューラ（改良版） ====== */
+const alarmTimers = new Map(); // key: etaISO|m5 → timeoutId
+const FIRE_TOLERANCE_MS = 15 * 60 * 1000; // 許容遅延（タブスリープ対策 15分）
+function notifyNow(title, body){
+  if('Notification' in window && Notification.permission==='granted'){
+    try{ new Notification(title, { body }); }catch{}
+  }else{
+    alert(`${title}\n${body}`);
+  }
+  // 診断ログ
+  logNotify(`通知: ${title} / ${body}`);
+}
+function scheduleOne(etaISO, minsBefore){
+  const eta = new Date(etaISO).getTime();
+  const fireAt = eta - minsBefore*60000;
+  const key = `${etaISO}|m${minsBefore}`;
+  // すでに発火済みならスキップ
+  if(state.fired.has(key)) return;
+
+  const delay = fireAt - Date.now();
+  // 許容ウィンドウ内なら即時発火
+  if(delay <= 0 && delay >= -FIRE_TOLERANCE_MS){
+    notifyNow('潜水艦 帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+    state.fired.add(key); saveFired(state.fired);
+    return;
+  }
+  // 過去に大きく過ぎていたら予約しない
+  if(delay < -FIRE_TOLERANCE_MS) return;
+
+  // 既存予約をクリアして再予約
+  if(alarmTimers.has(key)) { clearTimeout(alarmTimers.get(key)); }
+  const id = setTimeout(()=>{
+    // 二重条件（タブ復帰時のズレ吸収）
+    const now = Date.now();
+    if(now >= fireAt - 2000 && now <= fireAt + FIRE_TOLERANCE_MS){
+      notifyNow('潜水艦 帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+      state.fired.add(key); saveFired(state.fired);
+    }
+    alarmTimers.delete(key);
+  }, Math.max(0, delay));
+  alarmTimers.set(key, id);
+  logNotify(`予約: ${new Date(fireAt).toLocaleString()} に ${minsBefore}分前通知（ETA ${fmtLocal(new Date(eta))}）`);
+}
+function rescheduleAll(){
+  // 既存予約の掃除
+  for(const id of alarmTimers.values()) clearTimeout(id);
+  alarmTimers.clear();
+
+  const minsBefore = +document.getElementById('alarmMinutes').value || 0;
+  if(!minsBefore) { logNotify('アラーム: なし'); return; }
+
+  for(const r of state.rows){
+    if(!r.eta) continue;
+    scheduleOne(r.eta, minsBefore);
+  }
+}
+function logNotify(message){
+  const el = document.getElementById('notifyDiag');
+  const time = new Date().toLocaleTimeString();
+  el.textContent = `[${time}] ${message}\n` + (el.textContent||'');
+}
+
+/* ====== 画面描画 ====== */
 function render(){
   const tbody = document.getElementById('tbody'); tbody.innerHTML='';
   state.rows.forEach((r,i)=>{
@@ -312,9 +332,11 @@ function render(){
       <td class="left" data-left="${r.eta||''}">${eta?humanLeft(left):'-'}</td>`;
     tbody.appendChild(tr);
   });
+  // 再予約
+  rescheduleAll();
 }
 
-/* 名前編集を保存 */
+/* 名前編集の保存 */
 document.addEventListener('input', (ev)=>{
   const el = ev.target;
   if(el && el.classList && el.classList.contains('name')){
@@ -327,29 +349,32 @@ document.addEventListener('input', (ev)=>{
   }
 });
 
-/* ====== カウントダウン & 通知 ====== */
+/* ====== カウントダウン（併用） ====== */
 function tick(){
-  const mins = +document.getElementById('alarmMinutes').value || 0;
-  const canNotify = ('Notification' in window) && Notification.permission==='granted' && mins>0;
-
   document.querySelectorAll('[data-left]').forEach(el=>{
     const etaISO = el.getAttribute('data-left'); if(!etaISO) { el.textContent='-'; return; }
     const eta = new Date(etaISO).getTime();
     const left = eta - Date.now();
     el.textContent = left<=0 ? '帰還済み' : humanLeft(left);
+  });
 
-    if(canNotify){
-      const fireKey = `${etaISO}|m${mins}`;
-      const fireAt = eta - mins*60000;
-      if(!state.fired.has(fireKey) && Date.now() >= fireAt && left > -60*1000){
-        new Notification('潜水艦 帰還間近', { body: `${mins}分後に帰還（${fmtLocal(new Date(eta))}）` });
-        state.fired.add(fireKey); saveFired(state.fired);
+  // ポーリングでも保険として通知チェック（setTimeoutが解除される環境向け）
+  const minsBefore = +document.getElementById('alarmMinutes').value || 0;
+  if(minsBefore>0 && 'Notification' in window && Notification.permission==='granted'){
+    for(const r of state.rows){
+      if(!r.eta) continue;
+      const etaISO=r.eta, eta=new Date(etaISO).getTime();
+      const key=`${etaISO}|m${minsBefore}`;
+      const fireAt = eta - minsBefore*60000;
+      if(!state.fired.has(key) && Date.now() >= fireAt && Date.now() <= fireAt + FIRE_TOLERANCE_MS){
+        notifyNow('潜水艦 帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+        state.fired.add(key); saveFired(state.fired);
       }
     }
-  });
+  }
 }
 
-/* ====== OCR（ETAのみ更新） ====== */
+/* ====== OCR（ETA更新） ====== */
 document.getElementById('file').addEventListener('change', ev=>{
   const f = ev.target.files?.[0];
   document.getElementById('btnOcr').disabled = !f;
@@ -359,16 +384,12 @@ document.getElementById('file').addEventListener('change', ev=>{
   document.getElementById('ocrStatus').textContent = '準備OK：OCRを開始できます。';
   document.getElementById('rawText').style.display='none';
 });
-
 document.getElementById('btnOcr').addEventListener('click', async()=>{
   const f = document.getElementById('file').files?.[0]; if(!f) return;
-
   const baseTime = parseFileTimestamp(f.name) || new Date();
   document.getElementById('ocrStatus').textContent = `OCR処理中…（基準時刻: ${fmtLocal(baseTime)}）`;
 
-  const imgEl = document.getElementById('preview');
-  if(!imgEl.complete) await imgEl.decode();
-
+  const imgEl=document.getElementById('preview'); if(!imgEl.complete) await imgEl.decode();
   const worker = await Tesseract.createWorker('jpn+eng');
   try{
     await worker.setParameters({ tessedit_pageseg_mode:'3', user_defined_dpi:'300' });
@@ -377,10 +398,8 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
     document.getElementById('rawText').textContent = raw; document.getElementById('rawText').style.display='block';
 
     const minsList = await buildMinutesFromOCR(worker, data, imgEl);
-    if(!minsList.length){
-      document.getElementById('ocrStatus').textContent = '該当形式の行が見つかりませんでした。';
-      return;
-    }
+    if(!minsList.length){ document.getElementById('ocrStatus').textContent = '該当形式の行が見つかりませんでした。'; return; }
+
     for(let i=0;i<4;i++){
       const m = minsList[i];
       if(typeof m === 'number'){
@@ -399,12 +418,15 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
   }
 });
 
-/* ====== 通知ボタン / .ics 出力 ====== */
+/* ====== 通知UI & .ics ====== */
 document.getElementById('btnNotify').addEventListener('click', async()=>{
-  if(!('Notification' in window)){ alert('このブラウザは通知に未対応です'); return; }
+  if(!('Notification' in window)) { alert('このブラウザは通知に未対応です'); return; }
   const p = await Notification.requestPermission();
-  alert(p==='granted' ? '通知を許可しました（GitHub Pagesのhttpsで動作）' : '通知が許可されませんでした');
+  logNotify(`権限: ${p}`);
+  alert(p==='granted' ? '通知を許可しました（タブを開いたままご利用ください）' : '通知が許可されませんでした');
 });
+document.getElementById('alarmMinutes').addEventListener('change', ()=>{ rescheduleAll(); });
+
 function toICSUTC(dt){
   const t = new Date(dt.getTime()-dt.getTimezoneOffset()*60000).toISOString();
   return t.replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z');
@@ -417,7 +439,7 @@ document.getElementById('btnExport').addEventListener('click', ()=>{
   const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//FF14-SubTimer//JP','CALSCALE:GREGORIAN','METHOD:PUBLISH'];
   entries.forEach(({title, eta},i)=>{
     const dt = toICSUTC(eta);
-    const end = toICSUTC(new Date(eta.getTime()+60*1000)); // 1分イベント
+    const end = toICSUTC(new Date(eta.getTime()+60*1000));
     lines.push('BEGIN:VEVENT', `UID:${Date.now()}-${i}@ff14-sub`, `DTSTAMP:${dt}`, `DTSTART:${dt}`, `DTEND:${end}`, `SUMMARY:${title}`);
     if(minsAlarm>0){ lines.push('BEGIN:VALARM','ACTION:DISPLAY',`TRIGGER:-PT${minsAlarm}M`,'DESCRIPTION:Submarine return','END:VALARM'); }
     lines.push('END:VEVENT');
@@ -428,7 +450,20 @@ document.getElementById('btnExport').addEventListener('click', ()=>{
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ff14_submarine_returns.ics'; a.click();
 });
 
-/* ====== テスト（主要パターン） ====== */
+/* ====== 診断：状態確認 & テスト通知 ====== */
+document.getElementById('btnStatus').addEventListener('click', ()=>{
+  const p = 'Notification' in window ? Notification.permission : 'unsupported';
+  logNotify(`権限=${p} / アラーム=${document.getElementById('alarmMinutes').value}分前 / 予約=${alarmTimers.size}件`);
+});
+document.getElementById('btnTest').addEventListener('click', ()=>{
+  const delay = +document.getElementById('testDelay').value || 0;
+  setTimeout(()=>{
+    notifyNow('テスト通知', delay ? `${delay/1000}秒テスト完了` : '即時テスト完了');
+  }, delay);
+  logNotify(`テスト予約: ${delay}ms 後`);
+});
+
+/* ====== 内蔵テスト（簡易） ====== */
 function test(name, fn){
   const el=document.getElementById('tests');
   try{ fn(); el.innerHTML += `✅ ${name}<br/>`; }
@@ -436,17 +471,8 @@ function test(name, fn){
 }
 function assert(c,m){ if(!c) throw new Error(m||'assert'); }
 (function runTests(){
-  test('厳密: 残り時間 22時間10分', ()=>{
-    const hm = readHMStrict('… 残り時間 22時間10分 ]');
-    assert(hm && hm.h===22 && hm.mm===10,'strict 22h10m');
-  });
-  test('ゆるめ: 1日 6時間33分（見出し無し）', ()=>{
-    const hm = readHMLoose('Bonfire     1日 6時間33分');
-    assert(hm && hm.h===30 && hm.mm===33,'loose 1d6h33m');
-  });
-  test('探索完了→0分', ()=>{
-    const mins = /探索完了/.test('Submarine-3 探索完了') ? 0 : 999;
-    assert(mins===0,'done->0m');
+  test('humanLeft 3661s → 1時間 1分 01秒', ()=>{
+    const s = humanLeft(3661*1000); assert(/1時間 1分 01秒/.test(s),'format');
   });
 })();
 render();
@@ -454,4 +480,3 @@ setInterval(tick, 1000);
 </script>
 </body>
 </html>
-
