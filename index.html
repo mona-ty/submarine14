@@ -1,0 +1,263 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>FF14 潜水艦：帰還時刻（OCR/4隻固定/カウントダウン&通知）</title>
+<meta name="theme-color" content="#0f1220" />
+<style>
+  :root { --bg:#0f1220; --card:#171a2b; --border:#232946; --text:#e6ebff; --muted:#9aa3c7; }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--text);font:14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, Helvetica, Arial}
+  header{padding:16px;border-bottom:1px solid var(--border)}
+  h1{margin:0;font-size:18px}
+  main{max-width:980px;margin:0 auto;padding:16px;display:grid;gap:16px}
+  .card{background:#161a2b;border:1px solid var(--border);border-radius:12px;padding:12px}
+  .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+  input,button,select{border-radius:10px;border:1px solid var(--border);background:#0c1020;color:var(--text);padding:8px 10px}
+  button{cursor:pointer}
+  table{width:100%;border-collapse:collapse}
+  th,td{padding:8px;border-bottom:1px solid var(--border);text-align:left}
+  .small{font-size:12px;color:var(--muted)}
+  .preview{max-width:100%;border:1px solid var(--border);border-radius:8px;display:none;margin-top:6px}
+  .pill{display:inline-block;padding:2px 8px;border-radius:999px;background:#24304f;color:#cfe;border:1px solid #2f3a64}
+  details{border:1px dashed var(--border);border-radius:10px;padding:6px 10px}
+  summary{cursor:pointer}
+</style>
+</head>
+<body>
+<header class="row">
+  <h1>FF14 潜水艦：帰還時刻（OCR）</h1>
+</header>
+
+<main>
+
+  <!-- 操作 -->
+  <section class="card">
+    <div class="row">
+      <input id="file" type="file" accept="image/*" />
+      <button id="btnOcr" disabled>OCRして帰還時刻を更新</button>
+      <span class="small">ファイル名は <code>ffxiv_YYYYMMDD_HHMMSS_*.png</code> を想定（その時刻を基準にします）。</span>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <button id="btnNotify">通知を許可</button>
+      <label class="row small" style="gap:6px">
+        アラーム:
+        <select id="alarmMinutes">
+          <option value="0">なし</option>
+          <option value="1">1分前</option>
+          <option value="5" selected>5分前</option>
+          <option value="10">10分前</option>
+          <option value="30">30分前</option>
+        </select>
+      </label>
+      <span class="small">※ 通知はページを開いている間に1回だけ</span>
+    </div>
+    <img id="preview" class="preview" alt="preview"/>
+  </section>
+
+  <!-- 結果（名前/帰還/残り のみ） -->
+  <section class="card">
+    <table>
+      <thead>
+        <tr><th>潜水艦名</th><th>帰還時間</th><th>残り</th></tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div id="note" class="small" style="margin-top:6px">上から順に <code>submarine-1</code> ～ <code>submarine-4</code> を割り当てます。</div>
+  </section>
+
+  <!-- OCRログ（下部） -->
+  <section class="card">
+    <details open>
+      <summary>OCRログ</summary>
+      <div id="ocrStatus" class="small" style="margin:6px 0">画像を選ぶとOCRできます。</div>
+      <div id="rawText" class="small" style="white-space:pre-wrap;display:none"></div>
+    </details>
+  </section>
+
+  <!-- 内蔵テスト -->
+  <section class="card">
+    <details>
+      <summary>内蔵テスト</summary>
+      <div id="tests" class="small"></div>
+    </details>
+  </section>
+
+</main>
+
+<!-- Tesseract.js (OCR) -->
+<script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
+<script>
+/* ====== 定数・ユーティリティ ====== */
+const NAMES = ['submarine-1','submarine-2','submarine-3','submarine-4'];
+const STORE = 'ff14-sub-eta-only-v2';
+const STORE_FIRED = 'ff14-sub-eta-only-v2-fired';
+const z = n => String(n).padStart(2,'0');
+function fmtLocal(d){ return `${d.getFullYear()}-${z(d.getMonth()+1)}-${z(d.getDate())} ${z(d.getHours())}:${z(d.getMinutes())}:${z(d.getSeconds())}`; }
+function humanLeft(ms){
+  if(!isFinite(ms)) return '-';
+  const neg=ms<0; ms=Math.abs(ms);
+  const s=Math.floor(ms/1000);
+  const h=Math.floor(s/3600), m=Math.floor((s%3600)/60), ss=s%60;
+  return (neg?'-':'')+`${h}時間 ${m}分 ${z(ss)}秒`;
+}
+function normalizeJaSpaces(s){
+  let t = s.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0))
+           .replace(/[：]/g,':').replace(/\u3000/g,' ')
+           .replace(/[ \t]+/g,' ').replace(/\s+\n/g,'\n').trim();
+  t = t.replace(/([\u3040-\u30FF\u3400-\u9FFF])\s+(?=[\u3040-\u30FF\u3400-\u9FFF])/g, '$1');
+  return t;
+}
+/** ffxiv_YYYYMMDD_HHMMSS_xxx.png → Date(ローカル) */
+function parseFileTimestamp(filename){
+  const m = filename.match(/ffxiv_(\d{8})_(\d{6})/i);
+  if(!m) return null;
+  const y=+m[1].slice(0,4), mo=+m[1].slice(4,6)-1, d=+m[1].slice(6,8);
+  const hh=+m[2].slice(0,2), mm=+m[2].slice(2,4), ss=+m[2].slice(4,6);
+  return new Date(y,mo,d,hh,mm,ss);
+}
+/** 指定行だけ抽出して残り分の配列へ */
+function extractMinutesList(ocrText){
+  const lines = normalizeJaSpaces(ocrText).split(/\n/).map(s=>s.trim()).filter(Boolean);
+  const re = /\[Rank\s*\d+\][^\n]*?\[\s*探索中\s*:\s*残り時間\s*(\d{1,3})\s*時間\s*(\d{1,2})\s*分\s*\]/i;
+  const mins = [];
+  for(const L of lines){
+    const m = L.match(re); if(m){ mins.push((+m[1])*60 + (+m[2])); }
+  }
+  return mins;
+}
+
+/* ====== 状態 ====== */
+function load(){ try{ const raw=localStorage.getItem(STORE); if(raw) return JSON.parse(raw); }catch{} return NAMES.map(n=>({name:n, eta:null})); }
+function save(rows){ localStorage.setItem(STORE, JSON.stringify(rows)); }
+function loadFired(){ try{ return new Set(JSON.parse(localStorage.getItem(STORE_FIRED)||'[]')); }catch{ return new Set(); } }
+function saveFired(set){ try{ localStorage.setItem(STORE_FIRED, JSON.stringify([...set])); }catch{} }
+
+const state = { rows: load(), fired: loadFired() };
+
+/* ====== 描画（名前/帰還/残り） ====== */
+function render(){
+  const tbody = document.getElementById('tbody'); tbody.innerHTML='';
+  state.rows.forEach((r,i)=>{
+    const eta = r.eta ? new Date(r.eta) : null;
+    const left = eta ? (eta.getTime() - Date.now()) : NaN;
+    const tr = document.createElement('tr');
+    tr.innerHTML = `
+      <td>${NAMES[i]}</td>
+      <td>${eta ? `<span class="pill" data-eta="${eta.toISOString()}">${fmtLocal(eta)}</span>` : '-'}</td>
+      <td class="left" data-left="${r.eta||''}">${eta?humanLeft(left):'-'}</td>`;
+    tbody.appendChild(tr);
+  });
+}
+
+/* ====== カウントダウン ＆ 通知 ====== */
+function tick(){
+  const mins = +document.getElementById('alarmMinutes').value || 0;
+  const canNotify = ('Notification' in window) && Notification.permission==='granted' && mins>0;
+
+  document.querySelectorAll('[data-left]').forEach(el=>{
+    const etaISO = el.getAttribute('data-left'); if(!etaISO) { el.textContent='-'; return; }
+    const eta = new Date(etaISO).getTime();
+    const left = eta - Date.now();
+    el.textContent = left<=0 ? '帰還済み' : humanLeft(left);
+
+    // 通知：一度だけ
+    if(canNotify){
+      const fireKey = `${etaISO}|m${mins}`;           // ETA + 分前 でユニーク化
+      const fireAt = eta - mins*60000;
+      if(!state.fired.has(fireKey) && Date.now() >= fireAt && left > -60*1000){ // 1分の猶予で多重防止
+        new Notification('潜水艦 帰還間近', { body: `${mins}分後に帰還（${fmtLocal(new Date(eta))}）` });
+        state.fired.add(fireKey); saveFired(state.fired);
+      }
+    }
+  });
+}
+
+/* ====== イベント ====== */
+document.getElementById('file').addEventListener('change', ev=>{
+  const f = ev.target.files?.[0];
+  document.getElementById('btnOcr').disabled = !f;
+  if(!f) return;
+  const url = URL.createObjectURL(f);
+  const img = document.getElementById('preview'); img.src = url; img.style.display = 'block';
+  document.getElementById('ocrStatus').textContent = '準備OK：OCRを開始できます。';
+  document.getElementById('rawText').style.display='none';
+});
+
+document.getElementById('btnOcr').addEventListener('click', async()=>{
+  const f = document.getElementById('file').files?.[0]; if(!f) return;
+
+  const baseTime = parseFileTimestamp(f.name) || new Date(); // 形式外なら現在時刻
+  document.getElementById('ocrStatus').textContent = `OCR処理中…（基準時刻: ${fmtLocal(baseTime)}）`;
+
+  const worker = await Tesseract.createWorker('jpn+eng');
+  try{
+    const { data } = await worker.recognize(f);
+    const raw = data.text || '';
+    document.getElementById('rawText').textContent = raw; document.getElementById('rawText').style.display='block';
+
+    const minsList = extractMinutesList(raw);
+    if(!minsList.length){
+      document.getElementById('ocrStatus').textContent = '該当形式の行が見つかりませんでした。';
+      return;
+    }
+    // 上から4件まで → 固定名に上書き
+    state.rows = NAMES.map((name, i)=> {
+      const m = minsList[i];
+      if(typeof m === 'number'){
+        const eta = new Date(baseTime.getTime() + m*60000);
+        return { name, eta: eta.toISOString() };
+      }
+      return { name, eta: null };
+    });
+    save(state.rows);
+    render();
+    document.getElementById('ocrStatus').textContent = `検出 ${minsList.length} 件（反映 ${Math.min(4, minsList.length)} 件）。`;
+  }catch(e){
+    console.error(e);
+    document.getElementById('ocrStatus').textContent = 'OCR失敗：画像を明るく/拡大して再試行してください。';
+  }finally{
+    await worker.terminate();
+  }
+});
+
+document.getElementById('btnNotify').addEventListener('click', async()=>{
+  if(!('Notification' in window)){ alert('このブラウザは通知に未対応です'); return; }
+  const p = await Notification.requestPermission();
+  alert(p==='granted' ? '通知を許可しました（GitHub Pages上のhttpsで動作します）' : '通知が許可されませんでした');
+});
+
+/* ====== テスト ====== */
+function test(name, fn){
+  const el=document.getElementById('tests');
+  try{ fn(); el.innerHTML += `✅ ${name}<br/>`; }
+  catch(e){ el.innerHTML += `❌ ${name} — ${e.message}<br/>`; console.error(name, e); }
+}
+function assert(c,m){ if(!c) throw new Error(m||'assert'); }
+(function runTests(){
+  test('parseFileTimestamp 正常', ()=>{
+    const d = parseFileTimestamp('ffxiv_20250814_113435_693.png');
+    assert(d && d.getFullYear()===2025 && d.getMonth()===7 && d.getDate()===14, '日付誤り');
+    assert(d.getHours()===11 && d.getMinutes()===34 && d.getSeconds()===35, '時刻誤り');
+  });
+  test('extractMinutesList 日本語空白潰しOK', ()=>{
+    const s=`Submarine-1 [Rank130] [探 索 中 : 残 り 時 間 22 時 間 29 分]
+Submarine-2 [Rank130] [探索中:残り時間 03時間05分]
+無関係ログ 22時間29分`;
+    const arr = extractMinutesList(s);
+    assert(arr.length===2 && arr[0]===1349 && arr[1]===185, '抽出/分換算NG');
+  });
+  test('ETA計算 22:29', ()=>{
+    const base = parseFileTimestamp('ffxiv_20250814_113435_000.png');
+    const eta = new Date(base.getTime() + (22*60+29)*60000);
+    assert(eta.getHours()===10 && eta.getMinutes()===3 && eta.getSeconds()===35, '10:03:35想定');
+  });
+})();
+
+/* ====== 起動 ====== */
+render();
+setInterval(tick, 1000);
+</script>
+</body>
+</html>
