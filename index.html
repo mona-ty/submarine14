@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>FF14 潜水艦：帰還時刻管理（ver.1.1.4）</title>
+<title>FF14 潜水艦：帰還時刻管理（ver.1.2.0）</title>
 <meta name="theme-color" content="#0f1220" />
 <!-- 検索避け（GitHub Pages でも有効） -->
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
@@ -32,7 +32,7 @@
 </head>
 <body>
 <header class="row">
-  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.1.4）</h1>
+  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.2.0）</h1>
 </header>
 
 <main>
@@ -128,7 +128,7 @@
 /* =========================
    バージョン
 ========================= */
-const APP_VERSION = '1.1.4';
+const APP_VERSION = '1.2.0';
 
 /* =========================
    ログ出力（通知ログ / 処理ログ）
@@ -271,7 +271,7 @@ async function buildMinutesFromOCR(worker, data, imgEl){
     let hm=readHMStrict(s)||readHMLoose(s);
     if(!hm) continue;
     const bb=getBBox(L); const isSub=SUB_RE.test(s); const numM=s.match(SUB_NUM_RE);
-    lineObjs.push({mins:hm.h*60+hm.mm,isSub,num:numM?+numM[1]:null,
+    lineObjs.push({mins:hm.h*60+hm.mm,isSub,num=numM?+numM[1]:null,
       x0:bb?bb.x0:NaN,x1:bb?bb.x1:NaN,cy:bb?(bb.y0+bb.y1)/2:NaN,hgt:bb?(bb.y1-bb.y0):24});
   }
   if(lineObjs.length===0){
@@ -280,7 +280,7 @@ async function buildMinutesFromOCR(worker, data, imgEl){
       if(/探索完了/.test(s)){ lineObjs.push({mins:0,isSub:SUB_RE.test(s),num:(s.match(SUB_NUM_RE)||[])[1]?+RegExp.$1:null,x0:NaN,x1:NaN,cy:NaN,hgt:24}); continue; }
       let hm=readHMStrict(s)||readHMLoose(s); if(!hm) continue;
       const numM=s.match(SUB_NUM_RE);
-      lineObjs.push({mins:hm.h*60+hm.mm,isSub:SUB_RE.test(s),num:numM?+numM[1]:null,x0:NaN,x1:NaN,cy:NaN,hgt:24});
+      lineObjs.push({mins:hm.h*60+hm.mm,isSub:SUB_RE.test(s),num=numM?+numM[1]:null,x0:NaN,x1:NaN,cy:NaN,hgt:24});
     }
   }
   if(lineObjs.length===0) return [];
@@ -316,10 +316,13 @@ function saveFired(set){ try{ localStorage.setItem(STORE_FIRED, JSON.stringify([
 const state = { rows: load(), fired: loadFired() };
 
 /* =========================
-   通知（SW優先＋sticky対応＋即時ビープ）
+   通知（SW優先＋明示アイコン＋アプリ名）
 ========================= */
 const FIRE_TOLERANCE_MS = 15*60*1000;
 const alarmTimers = new Map();
+const ICON = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg xmlns=\"http://www.w3.org/2000/svg\" width=\"128\" height=\"128\" viewBox=\"0 0 128 128\"><rect width=\"128\" height=\"128\" rx=\"24\" fill=\"#0f1220\"/><path d=\"M20 74h88v8H20z\" fill=\"#65d1ff\"/><path d=\"M24 70c8-16 32-22 44-22s36 6 44 22H24z\" fill=\"#a6e1ff\"/><circle cx=\"44\" cy=\"82\" r=\"6\" fill=\"#fff\"/><circle cx=\"84\" cy=\"82\" r=\"6\" fill=\"#fff\"/></svg>');
+const BADGE = ICON;
+
 function scheduleOne(etaISO, minsBefore){
   const eta = new Date(etaISO).getTime();
   const fireAt = eta - minsBefore*60000;
@@ -327,7 +330,7 @@ function scheduleOne(etaISO, minsBefore){
   if(state.fired.has(key)) return;
   const delay = fireAt - Date.now();
   if(delay <= 0 && delay >= -FIRE_TOLERANCE_MS){
-    notifyNow('潜水艦 帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+    notifyNow('帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
     state.fired.add(key); saveFired(state.fired); return;
   }
   if(delay < -FIRE_TOLERANCE_MS) return;
@@ -335,7 +338,7 @@ function scheduleOne(etaISO, minsBefore){
   const id = setTimeout(()=>{
     const now = Date.now();
     if(now >= fireAt - 2000 && now <= fireAt + FIRE_TOLERANCE_MS){
-      notifyNow('潜水艦 帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+      notifyNow('帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
       state.fired.add(key); saveFired(state.fired);
     }
     alarmTimers.delete(key);
@@ -360,23 +363,35 @@ async function beep(){
   }catch{}
 }
 async function notifyNow(title, body, { sticky = false } = {}){
+  const appTitle = '【FF14 潜水艦タイマー】' + title;
   if(!('Notification' in window)){
-    alert(`${title}\n${body}`); return;
+    alert(`${appTitle}\n${body}`); return;
   }
   if(Notification.permission!=='granted'){
     logNotify('通知: permission='+Notification.permission);
-    alert(`${title}\n${body}`); return;
+    alert(`${appTitle}\n${body}`); return;
   }
-  const options = { body, tag: sticky ? `test-${Date.now()}` : 'ff14-submarine', renotify: !sticky, requireInteraction: sticky || document.hidden, silent: false };
+  const options = {
+    body,
+    tag: sticky ? `test-${Date.now()}` : 'ff14-submarine',
+    renotify: !sticky,
+    requireInteraction: sticky || document.hidden,
+    silent: false,
+    icon: ICON,
+    badge: BADGE
+  };
   try{
     if(swReady){
-      const reg = await swReady; await reg.showNotification(title, options); logNotify('通知: SW showNotification');
+      const reg = await swReady;
+      await reg.showNotification(appTitle, options);
+      logNotify('通知: SW showNotification');
     }else{
-      new Notification(title, options); logNotify('通知: window Notification');
+      new Notification(appTitle, options);
+      logNotify('通知: window Notification');
     }
   }catch(e){
     logNotify('通知エラー: '+e.message);
-    try{ new Notification(title, options); }catch{}
+    try{ new Notification(appTitle, options); }catch{}
   }
   if(document.visibilityState==='visible'){ beep(); }
 }
@@ -429,7 +444,7 @@ function tick(){
       const key=`${etaISO}|m${minsBefore}`;
       const fireAt = eta - minsBefore*60000;
       if(!state.fired.has(key) && Date.now() >= fireAt && Date.now() <= fireAt + FIRE_TOLERANCE_MS){
-        notifyNow('潜水艦 帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+        notifyNow('帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
         state.fired.add(key); saveFired(state.fired);
       }
     }
@@ -437,20 +452,16 @@ function tick(){
 }
 
 /* =========================
-   全クリア（新機能）
+   全クリア
 ========================= */
 function clearAll(){
   if(!confirm('入力された潜水艦名、帰還時刻、通知履歴、画像プレビューをすべてクリアします。よろしいですか？')) return;
-  // タイマー停止
   for(const id of alarmTimers.values()) clearTimeout(id);
   alarmTimers.clear();
-  // 状態初期化
   state.rows = DEFAULT_NAMES.map(n=>({name:n, eta:null}));
   state.fired = new Set();
-  // 保存クリア
   localStorage.removeItem(STORE);
   localStorage.removeItem(STORE_FIRED);
-  // UIリセット
   const file = document.getElementById('file'); if(file) file.value = '';
   const img = document.getElementById('preview'); if(img){ img.src=''; img.style.display='none'; }
   document.getElementById('ocrStatus').textContent = 'クリアしました。必要なら画像を選び直してください。';
@@ -461,13 +472,46 @@ function clearAll(){
 document.getElementById('btnClear').addEventListener('click', clearAll);
 
 /* =========================
-   OCR 実行
+   OCR 実行（フォールバック付き）
 ========================= */
 function ensureTesseract(){
   if(window.Tesseract && typeof window.Tesseract.createWorker === 'function') return true;
   logNotify('Tesseract が読み込めていません。ネットワーク/拡張機能/CSP を確認してください。');
   return false;
 }
+async function createTessWorkerWithFallback(){
+  const attempts = [
+    { workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+      corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      langPath:'https://tessdata.projectnaptha.com/5.0.0_fast',
+      label:'v5/fast' },
+    { workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+      corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      langPath:'https://tessdata.projectnaptha.com/5.0.0_best',
+      label:'v5/best' },
+    'default'
+  ];
+  for(const a of attempts){
+    try{
+      if(a==='default'){
+        think('OCR: default worker を試行');
+        const w = await Tesseract.createWorker({ logger:m=>{ if(m.progress!=null) think(`OCR: ${m.status} ${(m.progress*100).toFixed(1)}%`);} });
+        await w.loadLanguage('jpn+eng'); await w.initialize('jpn+eng');
+        return w;
+      }else{
+        think(`OCR: worker 構成を試行 (${a.label})`);
+        const w = await Tesseract.createWorker({ ...a, logger:m=>{ if(m.progress!=null) think(`OCR: ${m.status} ${(m.progress*100).toFixed(1)}%`);} });
+        await w.loadLanguage('jpn+eng'); await w.initialize('jpn+eng');
+        return w;
+      }
+    }catch(e){
+      logNotify(`OCR: ${a.label||'default'} 初期化失敗: ${e.message}`);
+      continue;
+    }
+  }
+  throw new Error('Tesseract worker の初期化に失敗しました');
+}
+
 document.getElementById('file').addEventListener('change', ev=>{
   const f = ev.target.files?.[0];
   document.getElementById('btnOcr').disabled = !f;
@@ -485,16 +529,9 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
   document.getElementById('ocrStatus').textContent = `OCR処理中…（基準時刻: ${fmtLocal(baseTime)}）`;
   const imgEl=document.getElementById('preview'); if(!imgEl.complete) await imgEl.decode();
   think('OCR開始: worker作成');
-
-  const worker = await Tesseract.createWorker({
-    workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-    corePath: 'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
-    langPath: 'https://tessdata.projectnaptha.com/5.0.0_best'
-  });
+  let worker = null;
   try{
-    await worker.loadLanguage('jpn+eng');
-    await worker.initialize('jpn+eng');
-    await worker.setParameters({ tessedit_pageseg_mode:'3', user_defined_dpi:'300' });
+    worker = await createTessWorkerWithFallback();
     think('OCR: 認識実行');
     const { data } = await worker.recognize(f);
     const raw = data.text || '';
@@ -521,7 +558,7 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
     document.getElementById('ocrStatus').textContent = 'OCR失敗：画像を明るく/拡大して再試行してください。';
     logNotify('OCRエラー: '+e.message);
   }finally{
-    await worker.terminate();
+    try{ if(worker) await worker.terminate(); }catch{}
     think('OCR: worker終了');
   }
 });
@@ -578,7 +615,7 @@ document.getElementById('btnTest').addEventListener('click', ()=>{
 document.getElementById('btnSwRaw').addEventListener('click', async()=>{
   try{
     const reg = await (swReady || navigator.serviceWorker.ready);
-    await reg.showNotification('SW直通知', { body:'Service Worker 直接呼び出し', requireInteraction:true, tag:`swraw-${Date.now()}` });
+    await reg.showNotification('【FF14 潜水艦タイマー】SW直通知', { body:'Service Worker 直接呼び出し', requireInteraction:true, tag:`swraw-${Date.now()}`, icon:ICON, badge:BADGE });
     logNotify('SW直: showNotification 成功');
   }catch(e){
     logNotify('SW直: 失敗 ' + e.message);
