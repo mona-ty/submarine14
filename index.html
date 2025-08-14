@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>FF14 潜水艦：帰還時刻管理（ver.1.1.1）</title>
+<title>FF14 潜水艦：帰還時刻管理（ver.1.1.2）</title>
 <meta name="theme-color" content="#0f1220" />
 <!-- 検索避け（GitHub Pages でも有効） -->
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
@@ -32,7 +32,7 @@
 </head>
 <body>
 <header class="row">
-  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.1.1）</h1>
+  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.1.2）</h1>
 </header>
 
 <main>
@@ -117,14 +117,15 @@
 /* =========================
    バージョン
 ========================= */
-const APP_VERSION = '1.1.1';
+const APP_VERSION = '1.1.2';
 
 /* =========================
    SW登録（通知を確実に）
 ========================= */
 let swReady = null;
 if ('serviceWorker' in navigator) {
-  navigator.serviceWorker.register('./sw.js', { scope: './' })
+  // repo配下でも確実に参照できるよう相対パスを明示
+  navigator.serviceWorker.register('sw.js', { scope: './' })
     .then(() => { swReady = navigator.serviceWorker.ready; logNotify('SW: 登録OK'); })
     .catch(e => logNotify('SW: 登録失敗 ' + e.message));
 }
@@ -147,15 +148,17 @@ function humanLeft(ms){
 }
 function normalizeJaSpaces(s){
   let t = s.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0))
-           .replace(/[：]/g,':').replace(/\\u3000/g,' ')
-           .replace(/[ \\t]+/g,' ').replace(/\\s+\\n/g,'\\n').trim();
+           .replace(/[：]/g,':').replace(/　/g,' ')
+           .replace(/[ 	]+/g,' ').replace(/\s+
+/g,'
+').trim();
   // 日本語の間の空白を除去（OCR対策）
-  t = t.replace(/([\\u3040-\\u30FF\\u3400-\\u9FFF])\\s+(?=[\\u3040-\\u30FF\\u3400-\\u9FFF])/g, '$1');
+  t = t.replace(/([぀-ヿ㐀-鿿])\s+(?=[぀-ヿ㐀-鿿])/g, '$1');
   return t;
 }
 /** ffxiv_YYYYMMDD_HHMMSS_* → Date(ローカル) */
 function parseFileTimestamp(filename){
-  const m = filename.match(/ffxiv_(\\d{8})_(\\d{6})/i);
+  const m = filename.match(/ffxiv_(\d{8})_(\d{6})/i);
   if(!m) return null;
   const y=+m[1].slice(0,4), mo=+m[1].slice(4,6)-1, d=+m[1].slice(6,8);
   const hh=+m[2].slice(0,2), mm=+m[2].slice(2,4), ss=+m[2].slice(4,6);
@@ -165,31 +168,31 @@ function parseFileTimestamp(filename){
 /* =========================
    OCRパターン & 解析
 ========================= */
-const SUB_RE = /S\\s*U\\s*B\\s*M\\s*A\\s*R\\s*I\\s*N\\s*E/i;
-const SUB_NUM_RE = /S\\s*U\\s*B\\s*M\\s*A\\s*R\\s*I\\s*N\\s*E\\s*[-‐-‒–—ー]?\\s*([0-9]+)/i;
+const SUB_RE = /S\s*U\s*B\s*M\s*A\s*R\s*I\s*N\s*E/i;
+const SUB_NUM_RE = /S\s*U\s*B\s*M\s*A\s*R\s*I\s*N\s*E\s*[-‐-‒–—ー]?\s*([0-9]+)/i;
 
 function tokenToNumber(tok){
   if(!tok) return null;
   let t = tok;
   t = t.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0));
   t = t.replace(/[Oo〇]/g,'0').replace(/[Il|Ｉｌ｜]/g,'1').replace(/[Z乙二]/g,'2').replace(/[Ss]/g,'5');
-  t = t.replace(/\\s+/g,'').replace(/[^\\d]/g,'');
+  t = t.replace(/\s+/g,'').replace(/[^\d]/g,'');
   if(!t) return null;
   return parseInt(t,10);
 }
 /** 残り時間 … を含む厳密版 */
 function readHMStrict(s){
-  const m1 = s.match(/残り時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*日\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*分/i);
+  const m1 = s.match(/残り時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
   if(m1){ const d=tokenToNumber(m1[1]),h=tokenToNumber(m1[2]),mm=tokenToNumber(m1[3]); if(d!=null&&h!=null&&mm!=null) return {h:d*24+h,mm}; }
-  const m2 = s.match(/残り時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,6})\\s*時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*分/i);
+  const m2 = s.match(/残り時間\s*([0-9０-９OIlZ乙二〇\s]{1,6})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
   if(m2){ const h=tokenToNumber(m2[1]),mm=tokenToNumber(m2[2]); if(h!=null&&mm!=null) return {h,mm}; }
   return null;
 }
 /** 見出しに残り時間があり、行は「21時間22分」等だけのレイアウト用 */
 function readHMLoose(s){
-  const m3 = s.match(/([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*日\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*分/i);
+  const m3 = s.match(/([0-9０-９OIlZ乙二〇\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
   if(m3){ const d=tokenToNumber(m3[1]),h=tokenToNumber(m3[2]),mm=tokenToNumber(m3[3]); if(d!=null&&h!=null&&mm!=null) return {h:d*24+h,mm}; }
-  const m4 = s.match(/([0-9０-９OIlZ乙二〇\\s]{1,6})\\s*時間\\s*([0-9０-９OIlZ乙二〇\\s]{1,3})\\s*分/i);
+  const m4 = s.match(/([0-9０-９OIlZ乙二〇\s]{1,6})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/i);
   if(m4){ const h=tokenToNumber(m4[1]),mm=tokenToNumber(m4[2]); if(h!=null&&mm!=null) return {h,mm}; }
   return null;
 }
@@ -251,7 +254,8 @@ async function buildMinutesFromOCR(worker, data, imgEl){
 
   if(lineObjs.length===0){
     // bboxなしフォールバック
-    const raw=(data.text||'').split(/\\n/).map(s=>normalizeJaSpaces(s));
+    const raw=(data.text||'').split(/
+/).map(s=>normalizeJaSpaces(s));
     for(const s of raw){
       if(/探索完了/.test(s)){ lineObjs.push({mins:0,isSub:SUB_RE.test(s),num:(s.match(SUB_NUM_RE)||[])[1]?+RegExp.$1:null,x0:NaN,x1:NaN,cy:NaN,hgt:24}); continue; }
       let hm=readHMStrict(s)||readHMLoose(s); if(!hm) continue;
@@ -302,7 +306,8 @@ const alarmTimers = new Map();
 
 function logNotify(msg){
   const el=document.getElementById('notifyDiag'); if(!el) return;
-  const t=new Date().toLocaleTimeString(); el.textContent = `[${t}] ${msg}\\n` + (el.textContent||'');
+  const t=new Date().toLocaleTimeString(); el.textContent = `[${t}] ${msg}
+` + (el.textContent||'');
 }
 async function beep(){
   try{
@@ -315,11 +320,13 @@ async function beep(){
 }
 async function notifyNow(title, body, { sticky = false } = {}){
   if(!('Notification' in window)){
-    alert(`${title}\\n${body}`); return;
+    alert(`${title}
+${body}`); return;
   }
   if(Notification.permission!=='granted'){
     logNotify('通知: permission='+Notification.permission);
-    alert(`${title}\\n${body}`); return;
+    alert(`${title}
+${body}`); return;
   }
   const options = {
     body,
@@ -492,7 +499,7 @@ document.getElementById('alarmMinutes').addEventListener('change', ()=>{ resched
 
 function toICSUTC(dt){
   const t = new Date(dt.getTime()-dt.getTimezoneOffset()*60000).toISOString();
-  return t.replace(/[-:]/g,'').replace(/\\.\\d{3}Z/,'Z');
+  return t.replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z');
 }
 document.getElementById('btnExport').addEventListener('click', ()=>{
   const minsAlarm = +document.getElementById('alarmMinutes').value || 0;
@@ -509,7 +516,8 @@ document.getElementById('btnExport').addEventListener('click', ()=>{
   });
   lines.push('END:VCALENDAR');
 
-  const blob = new Blob([lines.join('\\r\\n')], {type:'text/calendar'});
+  const blob = new Blob([lines.join('
+')], {type:'text/calendar'});
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ff14_submarine_returns.ics'; a.click();
 });
 
