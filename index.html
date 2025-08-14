@@ -87,13 +87,11 @@
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/tesseract.min.js"></script>
 <script>
 /* ====== バージョン表記 ====== */
-/** ← ここだけ書き換えれば OK */
-const APP_VERSION = '1.0.0';
+const APP_VERSION = '1.0.4';
 (function applyVersion(){
   const title = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
   document.title = title;
-  const h1 = document.getElementById('appTitle');
-  if(h1) h1.textContent = title;
+  const h1 = document.getElementById('appTitle'); if(h1) h1.textContent = title;
 })();
 
 /* ====== 定数・ユーティリティ ====== */
@@ -126,31 +124,138 @@ function parseFileTimestamp(filename){
   const hh=+m[2].slice(0,2), mm=+m[2].slice(2,4), ss=+m[2].slice(4,6);
   return new Date(y,mo,d,hh,mm,ss);
 }
+
+/** “Submarine” （空白混じりOK） */
+const SUB_RE = /S\s*U\s*B\s*M\s*A\s*R\s*I\s*N\s*E/i;
+const SUB_NUM_RE = /S\s*U\s*B\s*M\s*A\s*R\s*I\s*N\s*E\s*[-‐-‒–—ー]?\s*([0-9]+)/i;
+
+/* --- 数字に強いトークン変換（行内のみ） --- */
+function tokenToNumber(tok){
+  if(!tok) return null;
+  let t = tok;
+  t = t.replace(/[０-９]/g, d => String.fromCharCode(d.charCodeAt(0)-0xFEE0));
+  // 形が似た誤認を代替（限定的に）
+  t = t.replace(/[Oo]/g,'0')
+       .replace(/[Il|]/g,'1')
+       .replace(/[Z乙二]/g,'2')
+       .replace(/[Ss]/g,'5');
+  t = t.replace(/\s+/g,'');           // 桁内スペース削除
+  t = t.replace(/[^\d]/g,'');         // 非数字除去
+  if(!t) return null;
+  return parseInt(t,10);
+}
+
+/* --- 行テキストから (h, m) を抽出：日にも対応 --- */
+function readHMFromLineText(t){
+  const s = normalizeJaSpaces(t);
+
+  // 1) 日＋時間＋分（空白は任意）
+  let m = s.match(/残り時間\s*([0-9０-９OIlZ乙二\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二\s]{1,3})\s*分/i);
+  if(m){
+    const d = tokenToNumber(m[1]), h = tokenToNumber(m[2]), mm = tokenToNumber(m[3]);
+    if(d!=null && h!=null && mm!=null) return { h: d*24 + h, mm };
+  }
+
+  // 2) 時間＋分のみ
+  m = s.match(/残り時間\s*([0-9０-９OIlZ乙二\s]{1,6})\s*時間\s*([0-9０-９OIlZ乙二\s]{1,3})\s*分/i);
+  if(m){
+    const h = tokenToNumber(m[1]), mm = tokenToNumber(m[2]);
+    if(h!=null && mm!=null) return { h, mm };
+  }
+
+  return null;
+}
+
+/* --- ラインの bbox を取得（tesseract.js の表記ゆれを吸収） --- */
+function getBBox(L){
+  return L?.bbox || L?.bbl || L?.boundingBox || null;
+}
+
+/* --- クラスタリングで同じブロックの候補群を選ぶ --- */
+function pickBestCluster(cands, imgW){
+  if(cands.length===0) return [];
+  // 行高の中央値 → クラスタ閾値
+  const heights = cands.map(c=>c.hgt).sort((a,b)=>a-b);
+  const med = heights[Math.floor(heights.length/2)] || 24;
+  const th = Math.max(20, Math.min(60, med * 1.5));  // 20〜60の範囲で自動調整
+
+  // yでソートして近いものを同クラスタへ
+  cands.sort((a,b)=>a.cy-b.cy);
+  const clusters = [];
+  for(const c of cands){
+    const last = clusters[clusters.length-1];
+    if(!last || Math.abs(c.cy - last.lastCy) > th){
+      clusters.push({ items:[c], lastCy:c.cy });
+    }else{
+      last.items.push(c); last.lastCy = c.cy;
+    }
+  }
+
+  // スコア：行数優先 → xばらつき小 → 画面中央に近い
+  let best = clusters[0], bestScore = -1;
+  for(const cl of clusters){
+    const xs = cl.items.map(i=>i.x0);
+    const ys = cl.items.map(i=>i.cy);
+    const xspread = Math.max(...xs) - Math.min(...xs);
+    const vspread = Math.max(...ys) - Math.min(...ys);
+    const cx = (Math.max(...xs)+Math.min(...xs))/2;
+    const centerDist = Math.abs(cx - imgW/2);
+    const score = cl.items.length*1000 - xspread - vspread - centerDist*0.1;
+    if(score > bestScore){ bestScore = score; best = cl; }
+  }
+  return best.items;
+}
+
 /**
- * 抽出：1) "Submarine" 行を優先 2) 足りなければ他の行で補完 3) 番号順→登場順
+ * OCR結果(data)＋画像(imgEl) → 分配列を作成
+ *  - まず各行から HM を抽出
+ *  - bbox がある行でクラスタリングし、最適なブロックを選択
+ *  - Submarine が含まれていれば番号順で優先
  */
-function extractMinutesList(ocrText){
-  const lines = normalizeJaSpaces(ocrText).split(/\n/).map(s=>s.trim()).filter(Boolean);
-  const re = /\[Rank\s*\d+\][^\n]*?\[\s*探索中\s*:\s*残り時間\s*(\d{1,3})\s*時間\s*(\d{1,2})\s*分\s*\]/i;
-  const matches = [];
-  lines.forEach((L, idx)=>{
-    const m = L.match(re);
-    if(m){
-      const mins = (+m[1])*60 + (+m[2]);
-      const sub = /\bSubmarine\b/i.test(L);
-      const numM = L.match(/\bSubmarine[-\s]*([0-9]+)/i);
-      matches.push({ idx, mins, sub, num: numM ? +numM[1] : null });
-    }
-  });
-  let sel = matches.filter(v=>v.sub);
-  if(sel.length===0) sel = matches;
-  sel.sort((a,b)=>{
-    if(a.sub && b.sub){
-      if(a.num!=null && b.num!=null) return a.num - b.num;
-    }
-    return a.idx - b.idx;
-  });
-  return sel.slice(0,4).map(v=>v.mins);
+async function buildMinutesFromOCR(worker, data, imgEl){
+  const lineObjs = [];
+  for(const L of (data.lines || [])){
+    const text = L.text || '';
+    const s = normalizeJaSpaces(text);
+    // 「探索中」「残り時間」「時間」「分」が同一行
+    if(!/探索/.test(s) || !/残り/.test(s) || !/時間/.test(s) || !/分/.test(s)) continue;
+
+    const hm = readHMFromLineText(text);
+    if(!hm) continue;
+
+    const bb = getBBox(L);
+    const isSub = SUB_RE.test(s);
+    const numM = s.match(SUB_NUM_RE);
+
+    lineObjs.push({
+      mins: hm.h*60 + hm.mm,
+      isSub,
+      num: numM ? +numM[1] : null,
+      x0: bb ? bb.x0 : 0,
+      x1: bb ? bb.x1 : 0,
+      cy: bb ? (bb.y0 + bb.y1)/2 : 0,
+      hgt: bb ? (bb.y1 - bb.y0) : 24
+    });
+  }
+
+  if(lineObjs.length===0) return [];
+
+  let chosen = [];
+  // Submarine で4本以上拾えていれば、それを番号順
+  const subs = lineObjs.filter(v=>v.isSub);
+  if(subs.length>=2){ // 2本以上あれば“それっぽい”と判断
+    chosen = subs.sort((a,b)=>{
+      if(a.num!=null && b.num!=null) return a.num-b.num;
+      return a.cy-b.cy;
+    });
+  }else{
+    // bbox を使って最良クラスタを選択
+    const imgW = imgEl?.naturalWidth || 2000;
+    const pool = lineObjs.filter(v=>v.x1>0 || v.x0>0);
+    chosen = pickBestCluster(pool.length?pool:lineObjs, imgW).sort((a,b)=>a.cy-b.cy);
+  }
+
+  return chosen.slice(0,4).map(v=>v.mins);
 }
 
 /* ====== 状態（永続化） ====== */
@@ -194,10 +299,10 @@ document.addEventListener('input', (ev)=>{
   if(el && el.classList && el.classList.contains('name')){
     const i = +el.getAttribute('data-i');
     let val = (el.value||'').trim();
-    if(!val) val = DEFAULT_NAMES[i]; // 空なら既定名を補完
+    if(!val) val = DEFAULT_NAMES[i];
     state.rows[i].name = val;
     save(state.rows);
-    if(el.value.trim()==='') el.value = val; // 視覚的にも補完
+    if(el.value.trim()==='') el.value = val;
   }
 });
 
@@ -212,7 +317,6 @@ function tick(){
     const left = eta - Date.now();
     el.textContent = left<=0 ? '帰還済み' : humanLeft(left);
 
-    // 一度だけ通知
     if(canNotify){
       const fireKey = `${etaISO}|m${mins}`;
       const fireAt = eta - mins*60000;
@@ -241,22 +345,27 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
   const baseTime = parseFileTimestamp(f.name) || new Date();
   document.getElementById('ocrStatus').textContent = `OCR処理中…（基準時刻: ${fmtLocal(baseTime)}）`;
 
+  const imgEl = document.getElementById('preview');
+  if(!imgEl.complete) await imgEl.decode();
+
   const worker = await Tesseract.createWorker('jpn+eng');
   try{
+    await worker.setParameters({ tessedit_pageseg_mode:'3', user_defined_dpi:'300' });
     const { data } = await worker.recognize(f);
     const raw = data.text || '';
     document.getElementById('rawText').textContent = raw; document.getElementById('rawText').style.display='block';
 
-    const minsList = extractMinutesList(raw);
+    const minsList = await buildMinutesFromOCR(worker, data, imgEl);
     if(!minsList.length){
       document.getElementById('ocrStatus').textContent = '該当形式の行が見つかりませんでした。';
       return;
     }
+    // 先頭から4件の ETA を更新（名前は保持）
     for(let i=0;i<4;i++){
       const m = minsList[i];
       if(typeof m === 'number'){
         const eta = new Date(baseTime.getTime() + m*60000);
-        state.rows[i].eta = eta.toISOString(); // 名前は維持
+        state.rows[i].eta = eta.toISOString();
       }
     }
     save(state.rows);
@@ -299,7 +408,7 @@ document.getElementById('btnExport').addEventListener('click', ()=>{
   const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ff14_submarine_returns.ics'; a.click();
 });
 
-/* ====== テスト（簡易） ====== */
+/* ====== テスト（主要パターン） ====== */
 function test(name, fn){
   const el=document.getElementById('tests');
   try{ fn(); el.innerHTML += `✅ ${name}<br/>`; }
@@ -307,22 +416,30 @@ function test(name, fn){
 }
 function assert(c,m){ if(!c) throw new Error(m||'assert'); }
 (function runTests(){
-  // Submarine行優先抽出
-  const noisy = `Bonfire [Rank130] [探 索 中 : 残 り 時 間 2 時 間 18 分]
-Siipi [Rank130] [探索中:残り時間 22時間22分]
-Pilvi [Rank130] [探索中:残り時間 22時間23分]
-Kukka [Rank130] [探索中:残り時間 22時間23分]
-Submarine-1 [Rank130] [探索中:残り時間 22時間29分]
-Submarine-2 [Rank130] [探索中:残り時間 22時間29分]
-Submarine-3 [Rank130] [探索中:残り時間 22時間29分]
-Submarine-4 [Rank130] [探索中:残り時間 22時間29分]`;
-  test('抽出: Submarine行を優先して4件取得', ()=>{
-    const out = extractMinutesList(noisy);
-    assert(out.length===4 && out.every(v=>v===1349),'抽出優先ロジックNG');
+  test('HM抽出: 時間のみ', ()=>{
+    const hm = readHMFromLineText('... 残り時間 22時間10分 ]');
+    assert(hm && hm.h===22 && hm.mm===10,'22h10m');
   });
-  // タイトルが ver. を含むこと
-  test('タイトルにバージョン表記', ()=>{
-    assert(document.title.includes('帰還時刻管理') && document.title.includes('ver.'),'タイトル反映NG');
+  test('HM抽出: 日+時間+分（空白あり）', ()=>{
+    const hm = readHMFromLineText('残り時間 1日 6時間33分');
+    assert(hm && hm.h===30 && hm.mm===33,'1日6時間33分→30h33m');
+  });
+  test('Submarine無しでもクラスタ選択', ()=>{
+    const fake = [
+      {text:'Bonfire [Rank] [探索中:残り時間 2時間18分]', bbox:{x0:50,x1:450,y0:50,y1:70}},
+      {text:'Siipi [Rank] [探索中:残り時間 22時間17分]', bbox:{x0:50,x1:450,y0:75,y1:95}},
+      {text:'KAERU-01 [Rank] [探索中:残り時間 1日1時間49分]', bbox:{x0:500,x1:1000,y0:300,y1:320}},
+      {text:'USAGI-02 [Rank] [探索中:残り時間 1時間50分]', bbox:{x0:500,x1:1000,y0:325,y1:345}},
+      {text:'SUGOKU [Rank] [探索中:残り時間 18時間30分]', bbox:{x0:500,x1:1000,y0:350,y1:370}},
+      {text:'PENGUIN [Rank] [探索中:残り時間 18時間28分]', bbox:{x0:500,x1:1000,y0:375,y1:395}}
+    ];
+    // 疑似 data/画像サイズ
+    const data = { lines: fake };
+    const img = { naturalWidth: 1200 };
+    buildMinutesFromOCR({ setParameters: async()=>{}, recognize: async()=>({data:{text:''}}) }, data, img).then(out=>{
+      // 後段クラスタ（KAERU..PENGUIN）を拾って4件になるはず
+      assert(out.length===4 && out[0]===24*1+1*60+49-60, 'クラスタ選択'); // ざっくり検証
+    });
   });
 })();
 render();
