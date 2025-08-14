@@ -1,22 +1,21 @@
-// 変更前: notifyNow(title, body)
-// 変更後:
-function notifyNow(title, body, { sticky = false } = {}) {
-  const options = {
-    body,
-    tag: sticky ? String(Date.now()) : 'ff14-submarine', // sticky時は統合しない
-    renotify: !sticky,
-    requireInteraction: sticky || document.hidden, // stickyなら手動で閉じるまで残る
-    silent: false
-  };
-  // SW 経由は現行のまま
-  if ('Notification' in window && Notification.permission === 'granted') {
-    (swReady ? swReady.then(reg => reg.showNotification(title, options)) : Promise.resolve(new Notification(title, options)))
-      .catch(() => new Notification(title, options));
-  } else {
-    alert(`${title}\n${body}`);
-  }
-  if (document.visibilityState === 'visible') { /* beep() は現状のままでOK */ }
-}
+// sw.js — シンプル通知用（Pushなし）
+// showNotification() を使うための最小実装
 
-// テストボタン側（今は notifyNow('テスト通知', ...); になっている箇所）
-notifyNow('テスト通知', delay ? `${delay/1000}秒テスト完了` : '即時テスト完了', { sticky: true });
+self.addEventListener('install', (e) => {
+  self.skipWaiting();
+});
+
+self.addEventListener('activate', (e) => {
+  self.clients.claim();
+});
+
+// 通知クリックで既存タブをフォーカス
+self.addEventListener('notificationclick', (event) => {
+  event.notification.close();
+  event.waitUntil((async () => {
+    const allClients = await clients.matchAll({ type: 'window', includeUncontrolled: true });
+    if (allClients.length) {
+      allClients[0].focus();
+    }
+  })());
+});
