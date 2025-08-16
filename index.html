@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-<title>FF14 潜水艦：帰還時刻管理（ver.1.2.6）</title>
+<title>FF14 潜水艦：帰還時刻管理（ver.1.2.7）</title>
 <meta name="theme-color" content="#0f1220" />
 <!-- 検索避け（GitHub Pages でも有効） -->
 <meta name="robots" content="noindex, nofollow, noarchive, nosnippet, noimageindex">
@@ -32,7 +32,7 @@
 </head>
 <body>
 <header class="row">
-  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.2.6）</h1>
+  <h1 id="appTitle">FF14 潜水艦：帰還時刻管理（ver.1.2.7）</h1>
 </header>
 
 <main>
@@ -128,7 +128,7 @@
 /* =========================
    バージョン
 ========================= */
-const APP_VERSION = '1.2.6';
+const APP_VERSION = '1.2.7';
 
 /* =========================
    ログ出力（通知ログ / 処理ログ）
@@ -255,108 +255,272 @@ function pickBestCluster(cands, imgW){
 }
 
 /* =========================
-   OCR 初期化（ローカル資産→CDN フォールバック） 
-   ※ 重要: langPath は createWorker に渡す
+   タイムアウト
 ========================= */
 function withTimeout(promise, ms, label){
   let t;
   const timeout = new Promise((_,rej)=> t=setTimeout(()=>rej(new Error(label+' timeout')), ms));
   return Promise.race([promise.finally(()=>clearTimeout(t)), timeout]);
 }
-async function detectLocalAssets(){
-  // 同一オリジンの /ocr-assets/ に必要ファイルがあるか軽く確認
-  const head = async (p)=> {
-    try{
-      const r = await withTimeout(fetch(p, { method:'HEAD', cache:'no-store' }), 2000, 'HEAD '+p);
-      return r.ok;
-    }catch{ return false; }
-  };
-  const base = new URL('./ocr-assets/', location.href).href;
-  const ok = await head(base+'worker.min.js') && await head(base+'tesseract-core.wasm.js');
-  // tessdata は jpn/eng のどちらかがあればOKとする
-  const okLang = ok && (await head(base+'tessdata/jpn.traineddata.gz') || await head(base+'tessdata/eng.traineddata.gz'));
-  if(ok && okLang){
-    think('OCR: ローカル資産を検出 /ocr-assets/');
-    return {
-      workerPath: base+'worker.min.js',
-      corePath:   base+'tesseract-core.wasm.js',
-      langPath:   base+'tessdata'
-    };
-  }
-  return null;
-}
 
+/* =========================
+   OCR 初期化（CDNオンリー：Blob Worker + 多重フォールバック）
+========================= */
 async function createTessWorkerWithFallback(){
-  const local = await detectLocalAssets();
-  const workerCores = [];
-  if(local){
-    workerCores.push({ ...local, label:'local' });
-  }
-  workerCores.push(
-    { workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-      corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
-      langPath:'https://tessdata.projectnaptha.com/5.0.0_fast',
-      label:'jsDelivr@5 fast' },
-    { workerPath:'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
-      corePath:'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
-      langPath:'https://tessdata.projectnaptha.com/5.0.0/fast',
-      label:'jsDelivr@5 fast/' },
-    { workerPath:'https://unpkg.com/tesseract.js@5/dist/worker.min.js',
-      corePath:'https://unpkg.com/tesseract.js-core@5/tesseract-core.wasm.js',
-      langPath:'https://tessdata.projectnaptha.com/5.0.0_fast',
-      label:'unpkg@5 fast' }
-  );
-  // さらにいくつか（必要なら追加）
-  workerCores.push(
-    { workerPath:'https://unpkg.com/tesseract.js@5/dist/worker.min.js',
-      corePath:'https://unpkg.com/tesseract.js-core@5/tesseract-core.wasm.js',
-      langPath:'https://tessdata.projectnaptha.com/4.0.0_fast',
-      label:'unpkg@5 → data@4 fast' },
-  );
+  // Worker/Core 候補（blob URL で起動）
+  const workerCores = [
+    {
+      label: 'jsDelivr@5 (blob)',
+      workerPath: 'https://cdn.jsdelivr.net/npm/tesseract.js@5/dist/worker.min.js',
+      corePath:   'https://cdn.jsdelivr.net/npm/tesseract.js-core@5/tesseract-core.wasm.js',
+      workerBlobURL: true
+    },
+    {
+      label: 'unpkg@5 (blob)',
+      workerPath: 'https://unpkg.com/tesseract.js@5/dist/worker.min.js',
+      corePath:   'https://unpkg.com/tesseract.js-core@5/tesseract-core.wasm.js',
+      workerBlobURL: true
+    },
+    {
+      // 最終手段：パス未指定（tesseract.js のデフォルト解決）
+      label: 'default (blob)',
+      workerPath: undefined,
+      corePath:   undefined,
+      workerBlobURL: true
+    }
+  ];
+
+  // tessdata（学習データ）候補（Naptha → GitHub Raw → 旧版）
+  const langBases = [
+    'https://tessdata.projectnaptha.com/5.0.0_fast',
+    'https://tessdata.projectnaptha.com/5.0.0/fast',
+    'https://tessdata.projectnaptha.com/5.0.0',
+    'https://raw.githubusercontent.com/naptha/tessdata/gh-pages/5.0.0_fast',
+    'https://raw.githubusercontent.com/naptha/tessdata/gh-pages/5.0.0',
+    'https://tessdata.projectnaptha.com/4.0.0_fast',
+    'https://raw.githubusercontent.com/naptha/tessdata/gh-pages/4.0.0_fast'
+  ];
 
   const langsList = ['jpn+eng','jpn','eng'];
 
-  for(const wc of workerCores){
-    try{
-      think(`OCR: createWorker 試行 (${wc.label})`);
-      const w = await withTimeout(Tesseract.createWorker({
-        workerPath: wc.workerPath,
-        corePath:   wc.corePath,
-        langPath:   wc.langPath,   // ← ここが重要
-        logger:m=>{ if(m.progress!=null) think(`OCR: ${m.status} ${(m.progress*100).toFixed(1)}%`); }
-      }), 15000, `createWorker(${wc.label})`);
-      for(const langs of langsList){
-        try{
-          think(`OCR: loadLanguage(${langs})`);
-          await withTimeout(w.loadLanguage(langs), 45000, `loadLanguage(${langs})`);
-          think(`OCR: initialize(${langs})`);
-          await withTimeout(w.initialize(langs), 15000, `initialize(${langs})`);
-          return { w, langs };
-        }catch(e){
-          logNotify(`OCR: ${langs} 初期化失敗 (${wc.label}): ${e.message}`);
-          try{ await w.reset(); }catch{}
+  for (const wc of workerCores) {
+    for (const langPath of langBases) {
+      try {
+        think(`OCR: createWorker 試行 (${wc.label}) @ langPath=${langPath}`);
+        const w = await withTimeout(Tesseract.createWorker({
+          ...(wc.workerPath ? { workerPath: wc.workerPath } : {}),
+          ...(wc.corePath   ? { corePath:   wc.corePath   } : {}),
+          ...(wc.workerBlobURL ? { workerBlobURL: true } : {}),
+          langPath, // ★ 重要：ここで tessdata の場所を指定
+          logger: m => { if (m.progress != null) think(`OCR: ${m.status} ${(m.progress*100).toFixed(1)}%`); }
+        }), 15000, `createWorker(${wc.label})`);
+
+        for (const langs of langsList) {
+          try {
+            think(`OCR: loadLanguage(${langs})`);
+            await withTimeout(w.loadLanguage(langs), 45000, `loadLanguage(${langs})`);
+            think(`OCR: initialize(${langs})`);
+            await withTimeout(w.initialize(langs), 15000, `initialize(${langs})`);
+            return { w, langs };
+          } catch (e) {
+            logNotify(`OCR: ${langs} 初期化失敗 (${wc.label}, ${langPath}): ${e.message}`);
+            try { await w.reset(); } catch {}
+          }
         }
+        try { await w.terminate(); } catch {}
+      } catch (e) {
+        logNotify(`OCR: createWorker失敗 (${wc.label}, ${langPath}) ${e.message}`);
       }
-      try{ await w.terminate(); }catch{}
-    }catch(e){
-      logNotify(`OCR: createWorker失敗 (${wc.label}) ${e.message}`);
-      continue;
     }
   }
-  throw new Error('Tesseract worker の初期化に失敗しました（全経路NG）');
+  throw new Error('Tesseract worker の初期化に失敗しました（全CDN経路NG）');
 }
+
+/* =========================
+   状態保存
+========================= */
+function makeDefaultRows(){ return DEFAULT_NAMES.map(n=>({name:n, eta:null})); }
+function load(){
+  try{
+    const raw=localStorage.getItem(STORE);
+    if(raw){
+      const parsed=JSON.parse(raw);
+      if(Array.isArray(parsed)&&parsed.length===4){
+        return parsed.map((r,i)=>({ name:r.name||DEFAULT_NAMES[i], eta:r.eta||null }));
+      }
+    }
+  }catch{}
+  return makeDefaultRows();
+}
+function save(rows){ localStorage.setItem(STORE, JSON.stringify(rows)); }
+function loadFired(){ try{ return new Set(JSON.parse(localStorage.getItem(STORE_FIRED)||'[]')); }catch{ return new Set(); } }
+function saveFired(set){ try{ localStorage.setItem(STORE_FIRED, JSON.stringify([...set])); }catch{} }
+const state = { rows: load(), fired: loadFired() };
+
+/* =========================
+   通知（SW優先＋明示アイコン＋アプリ名）
+========================= */
+const FIRE_TOLERANCE_MS = 15*60*1000;
+const alarmTimers = new Map();
+const ICON = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="#0f1220"/><path d="M20 74h88v8H20z" fill="#65d1ff"/><path d="M24 70c8-16 32-22 44-22s36 6 44 22H24z" fill="#a6e1ff"/><circle cx="44" cy="82" r="6" fill="#fff"/><circle cx="84" cy="82" r="6" fill="#fff"/></svg>');
+const BADGE = ICON;
+
+async function beep(){
+  try{
+    const ctx = new (window.AudioContext||window.webkitAudioContext)();
+    const osc = ctx.createOscillator(); const gain = ctx.createGain();
+    osc.type='sine'; osc.frequency.value=880; gain.gain.value=0.06;
+    osc.connect(gain).connect(ctx.destination); osc.start();
+    setTimeout(()=>{ osc.stop(); ctx.close(); }, 200);
+  }catch{}
+}
+async function notifyNow(title, body, { sticky = false } = {}){
+  const appTitle = '【FF14 潜水艦タイマー】' + title;
+  if(!('Notification' in window)){
+    alert(`${appTitle}\n${body}`); return;
+  }
+  if(Notification.permission!=='granted'){
+    logNotify('通知: permission='+Notification.permission);
+    alert(`${appTitle}\n${body}`); return;
+  }
+  const options = {
+    body,
+    tag: sticky ? `test-${Date.now()}` : 'ff14-submarine',
+    renotify: !sticky,
+    requireInteraction: sticky || document.hidden,
+    silent: false,
+    icon: ICON,
+    badge: BADGE
+  };
+  try{
+    if(swReady){
+      const reg = await swReady;
+      await reg.showNotification(appTitle, options);
+      logNotify('通知: SW showNotification');
+    }else{
+      new Notification(appTitle, options);
+      logNotify('通知: window Notification');
+    }
+  }catch(e){
+    logNotify('通知エラー: '+e.message);
+    try{ new Notification(appTitle, options); }catch{}
+  }
+  if(document.visibilityState==='visible'){ beep(); }
+}
+function scheduleOne(etaISO, minsBefore){
+  const eta = new Date(etaISO).getTime();
+  const fireAt = eta - minsBefore*60000;
+  const key = `${etaISO}|m${minsBefore}`;
+  if(state.fired.has(key)) return;
+  const delay = fireAt - Date.now();
+  if(delay <= 0 && delay >= -FIRE_TOLERANCE_MS){
+    notifyNow('帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+    state.fired.add(key); saveFired(state.fired); return;
+  }
+  if(delay < -FIRE_TOLERANCE_MS) return;
+  if(alarmTimers.has(key)) clearTimeout(alarmTimers.get(key));
+  const id = setTimeout(()=>{
+    const now = Date.now();
+    if(now >= fireAt - 2000 && now <= fireAt + FIRE_TOLERANCE_MS){
+      notifyNow('帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+      state.fired.add(key); saveFired(state.fired);
+    }
+    alarmTimers.delete(key);
+  }, Math.max(0, delay));
+  alarmTimers.set(key, id);
+  logNotify(`予約: ${new Date(fireAt).toLocaleString()} に ${minsBefore}分前通知（ETA ${fmtLocal(new Date(eta))}）`);
+}
+function rescheduleAll(){
+  for(const id of alarmTimers.values()) clearTimeout(id);
+  alarmTimers.clear();
+  const minsBefore = +document.getElementById('alarmMinutes').value || 0;
+  if(!minsBefore){ logNotify('アラーム: なし'); return; }
+  for(const r of state.rows){ if(r.eta) scheduleOne(r.eta, minsBefore); }
+}
+
+/* =========================
+   表示更新
+========================= */
+function render(){
+  const tbody = document.getElementById('tbody'); tbody.innerHTML='';
+  state.rows.forEach((r,i)=>{
+    const eta = r.eta ? new Date(r.eta) : null;
+    const left = eta ? (eta.getTime() - Date.now()) : NaN;
+    const tr = document.createElement('tr');
+    tr.innerHTML =
+      '<td><input class="name" data-i="'+i+'" value="'+r.name.replace(/"/g,'&quot;')+'" /></td>' +
+      '<td>' + (eta ? ('<span class="pill" data-eta="'+eta.toISOString()+'">'+fmtLocal(eta)+'</span>') : '-') + '</td>' +
+      '<td class="left" data-left="'+(r.eta||'')+'">' + (eta?humanLeft(left):'-') + '</td>';
+    tbody.appendChild(tr);
+  });
+  rescheduleAll();
+}
+
+/* 名前編集の保存 */
+document.addEventListener('input', (ev)=>{
+  const el = ev.target;
+  if(el && el.classList && el.classList.contains('name')){
+    const i = +el.getAttribute('data-i');
+    let val = (el.value||'').trim();
+    if(!val) val = DEFAULT_NAMES[i];
+    state.rows[i].name = val;
+    save(state.rows);
+    if(el.value.trim()==='') el.value = val;
+    think(`名前編集: row${i+1} -> "${val}"`);
+  }
+});
+
+/* カウントダウン更新 */
+function tick(){
+  document.querySelectorAll('[data-left]').forEach(el=>{
+    const etaISO = el.getAttribute('data-left'); if(!etaISO){ el.textContent='-'; return; }
+    const eta = new Date(etaISO).getTime();
+    const left = eta - Date.now();
+    el.textContent = left<=0 ? '帰還済み' : humanLeft(left);
+  });
+  const minsBefore = +document.getElementById('alarmMinutes').value || 0;
+  if(minsBefore>0 && 'Notification' in window && Notification.permission==='granted'){
+    for(const r of state.rows){
+      if(!r.eta) continue;
+      const etaISO=r.eta, eta=new Date(etaISO).getTime();
+      const key=`${etaISO}|m${minsBefore}`;
+      const fireAt = eta - minsBefore*60000;
+      if(!state.fired.has(key) && Date.now() >= fireAt && Date.now() <= fireAt + FIRE_TOLERANCE_MS){
+        notifyNow('帰還間近', `${minsBefore}分後に帰還（${fmtLocal(new Date(eta))}）`);
+        state.fired.add(key); saveFired(state.fired);
+      }
+    }
+  }
+}
+
+/* =========================
+   全クリア
+========================= */
+function clearAll(){
+  if(!confirm('入力された潜水艦名、帰還時刻、通知履歴、画像プレビューをすべてクリアします。よろしいですか？')) return;
+  for(const id of alarmTimers.values()) clearTimeout(id);
+  alarmTimers.clear();
+  state.rows = DEFAULT_NAMES.map(n=>({name:n, eta:null}));
+  state.fired = new Set();
+  localStorage.removeItem(STORE);
+  localStorage.removeItem(STORE_FIRED);
+  const file = document.getElementById('file'); if(file) file.value = '';
+  const img = document.getElementById('preview'); if(img){ img.src=''; img.style.display='none'; }
+  document.getElementById('ocrStatus').textContent = 'クリアしました。必要なら画像を選び直してください。';
+  const raw = document.getElementById('rawText'); raw.textContent=''; raw.style.display='none';
+  render();
+  think('全クリアを実行しました');
+}
+document.getElementById('btnClear').addEventListener('click', clearAll);
 
 /* =========================
    OCR 実行
 ========================= */
 function ensureTesseract(){
-  return !!(window.Tesseract && typeof window.Tesseract.createWorker === 'function');
+  if(window.Tesseract && typeof window.Tesseract.createWorker === 'function') return true;
+  logNotify('Tesseract が読み込めていません。ネットワーク/拡張機能/CSP を確認してください。');
+  return false;
 }
-
-const FIRE_TOLERANCE_MS = 15*60*1000;
-const alarmTimers = new Map();
-const ICON  = 'data:image/svg+xml;charset=UTF-8,' + encodeURIComponent('<svg xmlns="http://www.w3.org/2000/svg" width="128" height="128" viewBox="0 0 128 128"><rect width="128" height="128" rx="24" fill="#0f1220"/><path d="M20 74h88v8H20z" fill="#65d1ff"/><path d="M24 70c8-16 32-22 44-22s36 6 44 22H24z" fill="#a6e1ff"/><circle cx="44" cy="82" r="6" fill="#fff"/><circle cx="84" cy="82" r="6" fill="#fff"/></svg>');
-const BADGE = ICON;
 
 document.getElementById('file').addEventListener('change', ev=>{
   const f = ev.target.files?.[0];
@@ -377,25 +541,37 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
   think('OCR開始: worker作成');
   let worker = null, langsUsed = 'jpn+eng';
   try{
-    const ret = await createTessWorkerWithFallback();
-    worker = ret.w; langsUsed = ret.langs;
+    const { w, langs } = await createTessWorkerWithFallback();
+    worker = w; langsUsed = langs;
     think(`OCR: 認識実行（langs=${langsUsed}）`);
     const { data } = await worker.recognize(f);
     const raw = data.text || '';
     document.getElementById('rawText').textContent = raw; document.getElementById('rawText').style.display='block';
     think(`OCR: 行数=${(data.lines||[]).length}`);
 
-    const minsList = await (async function buildMinutesFromOCR(data,imgEl){
-      const lineObjs=[]; const lines=Array.isArray(data.lines)?data.lines:[];
-      for(const L of lines){
-        const text=L?.text??''; const s=normalizeJaSpaces(text);
-        if(/探索完了/.test(s)){
-          const bb=L?.bbox||null;
-          const nm = s.match(SUB_NUM_RE);
-          lineObjs.push({mins:0,
-            x0:bb?bb.x0:NaN,cy:bb?((bb.y0+bb.y1)/2):NaN,hgt:bb?(bb.y1-bb.y0):24});
-          continue;
-        }
+    // ---- OCR行→分に変換（探索完了=0分対応）----
+    const lineObjs=[]; const lines=Array.isArray(data.lines)?data.lines:[];
+    for(const L of lines){
+      const text=L?.text??''; const s=normalizeJaSpaces(text);
+      if(/探索完了/.test(s)){
+        const bb=getBBox(L);
+        lineObjs.push({mins:0,x0:bb?bb.x0:NaN,cy:bb?((bb.y0+bb.y1)/2):NaN,hgt:bb?(bb.y1-bb.y0):24});
+        continue;
+      }
+      let m;
+      if((m=s.match(/([0-9０-９OIlZ乙二〇\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/))){
+        const d=tokenToNumber(m[1]),h=tokenToNumber(m[2]),mm=tokenToNumber(m[3]); if(d!=null&&h!=null&&mm!=null) lineObjs.push({mins:(d*24+h)*60+mm});
+        continue;
+      }
+      if((m=s.match(/([0-9０-９OIlZ乙二〇\s]{1,6})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/))){
+        const h=tokenToNumber(m[1]),mm=tokenToNumber(m[2]); if(h!=null&&mm!=null) lineObjs.push({mins:h*60+mm});
+        continue;
+      }
+    }
+    if(lineObjs.length===0){
+      const raw=(data.text||'').split(/\n/).map(s=>normalizeJaSpaces(s));
+      for(const s of raw){
+        if(/探索完了/.test(s)){ lineObjs.push({mins:0}); continue; }
         let m;
         if((m=s.match(/([0-9０-９OIlZ乙二〇\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/))){
           const d=tokenToNumber(m[1]),h=tokenToNumber(m[2]),mm=tokenToNumber(m[3]); if(d!=null&&h!=null&&mm!=null) lineObjs.push({mins:(d*24+h)*60+mm});
@@ -406,42 +582,23 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
           continue;
         }
       }
-      if(lineObjs.length===0){
-        const raw=(data.text||'').split(/\n/).map(s=>normalizeJaSpaces(s));
-        for(const s of raw){
-          if(/探索完了/.test(s)){ lineObjs.push({mins:0}); continue; }
-          let m;
-          if((m=s.match(/([0-9０-９OIlZ乙二〇\s]{1,3})\s*日\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/))){
-            const d=tokenToNumber(m[1]),h=tokenToNumber(m[2]),mm=tokenToNumber(m[3]); if(d!=null&&h!=null&&mm!=null) lineObjs.push({mins:(d*24+h)*60+mm});
-            continue;
-          }
-          if((m=s.match(/([0-9０-９OIlZ乙二〇\s]{1,6})\s*時間\s*([0-9０-９OIlZ乙二〇\s]{1,3})\s*分/))){
-            const h=tokenToNumber(m[1]),mm=tokenToNumber(m[2]); if(h!=null&&mm!=null) lineObjs.push({mins:h*60+mm});
-            continue;
-          }
-        }
-      }
-      if(lineObjs.length===0) return [];
-      return lineObjs.slice(0,4).map(v=>v.mins);
-    })(data,imgEl);
-
+    }
+    let minsList = lineObjs.slice(0,4).map(v=>v.mins);
     think(`OCR: 抽出結果（分）=${JSON.stringify(minsList)}`);
     if(!minsList.length){ document.getElementById('ocrStatus').textContent = '該当形式の行が見つかりませんでした。'; return; }
 
     // 反映
-    const rows = JSON.parse(localStorage.getItem(STORE) || 'null') || DEFAULT_NAMES.map(n=>({name:n, eta:null}));
     for(let i=0;i<4;i++){
       const m = minsList[i];
       if(typeof m === 'number'){
         const eta = new Date(baseTime.getTime() + m*60000);
-        rows[i].eta = eta.toISOString();
+        state.rows[i].eta = eta.toISOString();
       }
     }
-    localStorage.setItem(STORE, JSON.stringify(rows));
+    save(state.rows);
+    render();
     document.getElementById('ocrStatus').textContent = `検出 ${minsList.length} 件（反映 ${Math.min(4, minsList.length)} 件）。`;
     think('OCR完了: テーブル更新 & 保存');
-    // state を再読込してレンダリング
-    location.reload(); // 単純化（保存→描画の不整合を防止）
   }catch(e){
     console.error(e);
     document.getElementById('ocrStatus').textContent = 'OCR失敗：画像を明るく/拡大して再試行してください。';
@@ -451,88 +608,60 @@ document.getElementById('btnOcr').addEventListener('click', async()=>{
     think('OCR: worker終了');
   }
 });
-/* ここまで OCR */
 
 /* =========================
-   通知 & 表示（前回から変更なし）
+   通知UI & .ics 出力
 ========================= */
-function toICSUTC(dt){
-  const t = new Date(dt.getTime()-dt.getTimezoneOffset()*60000).toISOString();
-  return t.replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z');
-}
-function render(){
-  const tbody = document.getElementById('tbody'); tbody.innerHTML='';
-  const st = JSON.parse(localStorage.getItem(STORE)||'null') || DEFAULT_NAMES.map(n=>({name:n,eta:null}));
-  st.forEach((r,i)=>{
-    const eta = r.eta ? new Date(r.eta) : null;
-    const left = eta ? (eta.getTime() - Date.now()) : NaN;
-    const tr = document.createElement('tr');
-    tr.innerHTML =
-      '<td><input class="name" data-i="'+i+'" value="'+(r.name||DEFAULT_NAMES[i]).replace(/"/g,'&quot;')+'" /></td>' +
-      '<td>' + (eta ? ('<span class="pill" data-eta="'+eta.toISOString()+'">'+fmtLocal(eta)+'</span>') : '-') + '</td>' +
-      '<td class="left" data-left="'+(r.eta||'')+'">' + (eta?humanLeft(left):'-') + '</td>';
-    tbody.appendChild(tr);
-  });
-}
-document.addEventListener('input', (ev)=>{
-  const el = ev.target;
-  if(el && el.classList && el.classList.contains('name')){
-    const i = +el.getAttribute('data-i');
-    const st = JSON.parse(localStorage.getItem(STORE)||'null') || DEFAULT_NAMES.map(n=>({name:n,eta:null}));
-    let val = (el.value||'').trim();
-    if(!val) val = DEFAULT_NAMES[i];
-    st[i].name = val;
-    localStorage.setItem(STORE, JSON.stringify(st));
-    if(el.value.trim()==='') el.value = val;
-    think(`名前編集: row${i+1} -> "${val}"`);
-  }
-});
-function tick(){
-  document.querySelectorAll('[data-left]').forEach(el=>{
-    const etaISO = el.getAttribute('data-left'); if(!etaISO){ el.textContent='-'; return; }
-    const eta = new Date(etaISO).getTime();
-    const left = eta - Date.now();
-    el.textContent = left<=0 ? '帰還済み' : humanLeft(left);
-  });
-}
-document.getElementById('btnClear').addEventListener('click', ()=>{
-  if(!confirm('入力された潜水艦名、帰還時刻、通知履歴、画像プレビューをすべてクリアします。よろしいですか？')) return;
-  localStorage.removeItem(STORE);
-  localStorage.removeItem(STORE_FIRED);
-  const file = document.getElementById('file'); if(file) file.value = '';
-  const img = document.getElementById('preview'); if(img){ img.src=''; img.style.display='none'; }
-  document.getElementById('ocrStatus').textContent = 'クリアしました。必要なら画像を選び直してください。';
-  const raw = document.getElementById('rawText'); raw.textContent=''; raw.style.display='none';
-  location.reload();
-});
-
 document.getElementById('btnNotify').addEventListener('click', async()=>{
   if(!('Notification' in window)) { alert('このブラウザは通知に未対応です'); return; }
   const p = await Notification.requestPermission();
   logNotify(`権限: ${p}`);
   alert(p==='granted' ? '通知を許可しました（タブを開いたままご利用ください）' : '通知が許可されませんでした');
 });
+document.getElementById('alarmMinutes').addEventListener('change', ()=>{ rescheduleAll(); });
+
+function toICSUTC(dt){
+  const t = new Date(dt.getTime()-dt.getTimezoneOffset()*60000).toISOString();
+  return t.replace(/[-:]/g,'').replace(/\.\d{3}Z/,'Z');
+}
+document.getElementById('btnExport').addEventListener('click', ()=>{
+  const minsAlarm = +document.getElementById('alarmMinutes').value || 0;
+  const entries = state.rows.map(r=> r.eta ? { title:`${r.name} 帰還`, eta:new Date(r.eta) } : null).filter(Boolean);
+  if(!entries.length){ alert('エクスポート対象の帰還時刻がありません'); return; }
+
+  const lines = ['BEGIN:VCALENDAR','VERSION:2.0','PRODID:-//FF14-SubTimer//JP','CALSCALE:GREGORIAN','METHOD:PUBLISH'];
+  entries.forEach(({title, eta},i)=>{
+    const dt = toICSUTC(eta);
+    const end = toICSUTC(new Date(eta.getTime()+60*1000)); // 1分イベント
+    lines.push('BEGIN:VEVENT', `UID:${Date.now()}-${i}@ff14-sub`, `DTSTAMP:${dt}`, `DTSTART:${dt}`, `DTEND:${end}`, `SUMMARY:${title}`);
+    if(minsAlarm>0){ lines.push('BEGIN:VALARM','ACTION:DISPLAY',`TRIGGER:-PT${minsAlarm}M`,'DESCRIPTION:Submarine return','END:VALARM'); }
+    lines.push('END:VEVENT');
+  });
+  lines.push('END:VCALENDAR');
+
+  const blob = new Blob([lines.join('\r\n')], {type:'text/calendar'});
+  const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = 'ff14_submarine_returns.ics'; a.click();
+});
+
+/* =========================
+   通知診断 / テスト
+========================= */
 document.getElementById('btnStatus').addEventListener('click', ()=>{
   const p = 'Notification' in window ? Notification.permission : 'unsupported';
-  logNotify(`権限=${p} / SW=${!!swReady}`);
+  logNotify(`権限=${p} / SW=${!!swReady} / 予約=${alarmTimers.size}件 / アラーム=${document.getElementById('alarmMinutes').value}分前`);
+  think(`環境: origin=${location.origin}, isSecureContext=${isSecureContext}, href=${location.href}`);
 });
 document.getElementById('btnTest').addEventListener('click', ()=>{
   const delay = +document.getElementById('testDelay').value || 0;
   setTimeout(()=>{
-    if('Notification' in window && Notification.permission==='granted'){
-      if(swReady){
-        swReady.then(reg => reg.showNotification('【FF14 潜水艦タイマー】テスト通知', { body: delay ? `${delay/1000}秒テスト完了` : '即時テスト完了' }));
-      }else{
-        new Notification('【FF14 潜水艦タイマー】テスト通知', { body: delay ? `${delay/1000}秒テスト完了` : '即時テスト完了' });
-      }
-    }
+    notifyNow('テスト通知', delay ? `${delay/1000}秒テスト完了` : '即時テスト完了', { sticky: true });
   }, delay);
   logNotify(`テスト予約: ${delay}ms 後`);
 });
 document.getElementById('btnSwRaw').addEventListener('click', async()=>{
   try{
     const reg = await (swReady || navigator.serviceWorker.ready);
-    await reg.showNotification('【FF14 潜水艦タイマー】SW直通知', { body:'Service Worker 直接呼び出し', requireInteraction:true });
+    await reg.showNotification('【FF14 潜水艦タイマー】SW直通知', { body:'Service Worker 直接呼び出し', requireInteraction:true, tag:`swraw-${Date.now()}`, icon:ICON, badge:BADGE });
     logNotify('SW直: showNotification 成功');
   }catch(e){
     logNotify('SW直: 失敗 ' + e.message);
@@ -540,11 +669,29 @@ document.getElementById('btnSwRaw').addEventListener('click', async()=>{
 });
 
 /* =========================
-   初期化
+   内蔵テスト & 初期化
 ========================= */
+function test(name, fn){
+  const el=document.getElementById('tests');
+  try{ fn(); el.innerHTML += `✅ ${name}<br/>`; }
+  catch(e){ el.innerHTML += `❌ ${name} — ${e.message}<br/>`; console.error(name, e); }
+}
+function assert(c,m){ if(!c) throw new Error(m||'assert'); }
+
 (function init(){
   document.title = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
   document.getElementById('appTitle').textContent = `FF14 潜水艦：帰還時刻管理（ver.${APP_VERSION}）`;
+
+  test('humanLeft 3661s → 1時間 1分 01秒', ()=>{ const s = humanLeft(3661*1000); assert(/1時間 1分 01秒/.test(s),'format'); });
+  test('parseFileTimestamp ffxiv_20250814_140414_430.png', ()=>{
+    const d = parseFileTimestamp('ffxiv_20250814_140414_430.png'); 
+    assert(d instanceof Date && !isNaN(+d) && d.getFullYear()===2025 && d.getMonth()===7 && d.getDate()===14 && d.getHours()===14 && d.getMinutes()===4 && d.getSeconds()===14, 'timestamp parse');
+  });
+  test('tokenToNumber OCR誤読補正', ()=>{
+    assert(tokenToNumber('O0〇')===0,'0'); 
+    assert(tokenToNumber('Il|')===111,'1s'); 
+  });
+
   render();
   setInterval(tick, 1000);
   think('初期化: レンダリング/カウントダウン開始');
